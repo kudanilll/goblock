@@ -3,7 +3,7 @@
 #include <GL/glut.h>
 #include <GLFW/glfw3.h>
 
-void drawText(const std::string& text, float x, float y) {
+void draw_text(const std::string& text, float x, float y) {
   glMatrixMode(GL_PROJECTION);
   glPushMatrix();
   glLoadIdentity();
@@ -16,7 +16,7 @@ void drawText(const std::string& text, float x, float y) {
   glRasterPos2f(x, y);  // Koordinat teks
 
   for (char c : text) {
-    glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, c);  // Font bawaan OpenGL
+    glutBitmapCharacter(GLUT_BITMAP_9_BY_15, c);  // Font bawaan OpenGL
   }
 
   glMatrixMode(GL_MODELVIEW);

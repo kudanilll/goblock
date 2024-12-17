@@ -1,26 +1,35 @@
 #include "world.h"
 
 World::World() {
-  blocks.resize(WIDTH, std::vector<std::vector<Block>>(
-                           HEIGHT, std::vector<Block>(DEPTH, {false, 0})));
-  for (int x = 0; x < WIDTH; x++) {
-    for (int z = 0; z < DEPTH; z++) {
-      for (int y = 0; y < HEIGHT / 2; y++) {
-        blocks[x][y][z] = {true, 1};  // Blok tipe 1 (tanah)
+  blocks.resize(get_width(),
+                std::vector<std::vector<Block>>(
+                    get_height(), std::vector<Block>(get_depth(), {false, 0})));
+  for (int x = 0; x < get_width(); x++) {
+    for (int z = 0; z < get_depth(); z++) {
+      for (int y = 0; y < get_height() / 2; y++) {
+        blocks[x][y][z] = {true, 1};
       }
     }
   }
 }
 
-Block World::getBlock(int x, int y, int z) {
-  if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT && z >= 0 && z < DEPTH) {
+int World::get_width() { return WIDTH; }
+
+int World::get_height() { return HEIGHT; }
+
+int World::get_depth() { return DEPTH; }
+
+Block World::get_block(int x, int y, int z) {
+  if (x >= 0 && x < get_width() && y >= 0 && y < get_height() && z >= 0 &&
+      z < get_depth()) {
     return blocks[x][y][z];
   }
-  return {false, 0};  // Blok kosong
+  return {false, 0};
 }
 
-void World::setBlock(int x, int y, int z, int type) {
-  if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT && z >= 0 && z < DEPTH) {
+void World::set_block(int x, int y, int z, int type) {
+  if (x >= 0 && x < get_width() && y >= 0 && y < get_height() && z >= 0 &&
+      z < get_depth()) {
     blocks[x][y][z] = {type != 0, type};
   }
 }

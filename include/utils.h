@@ -3,6 +3,6 @@
 
 #include <string>
 
-void drawText(const std::string& text, float x, float y);
+void draw_text(const std::string& text, float x, float y);
 
 #endif

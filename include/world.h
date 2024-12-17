@@ -4,7 +4,7 @@
 #include <vector>
 
 struct Block {
-  bool isActive;
+  bool is_active;
 
   // 0: default
   // 1: tanah
@@ -14,16 +14,20 @@ struct Block {
 
 class World {
  public:
-  static const int WIDTH = 16;
-  static const int HEIGHT = 16;
-  static const int DEPTH = 16;
-
   World();
 
-  Block getBlock(int x, int y, int z);
-  void setBlock(int x, int y, int z, int type);
+  int get_width();
+  int get_height();
+  int get_depth();
+
+  Block get_block(int x, int y, int z);
+  void set_block(int x, int y, int z, int type);
 
  private:
+  const int WIDTH = 16;
+  const int HEIGHT = 16;
+  const int DEPTH = 16;
+
   std::vector<std::vector<std::vector<Block>>> blocks;
 };
 
