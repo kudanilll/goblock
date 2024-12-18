@@ -16,24 +16,52 @@ void Block::draw(const glm::mat4& view_matrix,
   glm::mat4 model_matrix = glm::translate(glm::mat4(1.0f), position_);
   glm::mat4 mvp_matrix = projection_matrix * view_matrix * model_matrix;
 
-  // Mengatur warna hijau untuk blok
   glMatrixMode(GL_MODELVIEW);
   glLoadMatrixf(&mvp_matrix[0][0]);
 
   glBegin(GL_QUADS);
-  glColor3f(0.0f, 0.6f, 0.0f);  // Warna hijau kustom
 
   // Face atas
+  glColor3f(0.0f, 0.6f, 0.0f);  // Hijau
+  glVertex3f(0, 1, 0);
+  glVertex3f(1, 1, 0);
+  glVertex3f(1, 1, 1);
+  glVertex3f(0, 1, 1);
+
+  // Face bawah
+  glColor3f(0.1f, 0.0f, 0.0f);  // Coklat
   glVertex3f(0, 0, 0);
   glVertex3f(1, 0, 0);
   glVertex3f(1, 0, 1);
   glVertex3f(0, 0, 1);
 
-  // Face bawah
-  glVertex3f(0, -1, 0);
-  glVertex3f(1, -1, 0);
-  glVertex3f(1, -1, 1);
-  glVertex3f(0, -1, 1);
+  // Face depan
+  glColor3f(0.1f, 0.0f, 0.0f);  // Coklat
+  glVertex3f(0, 0, 1);
+  glVertex3f(1, 0, 1);
+  glVertex3f(1, 1, 1);
+  glVertex3f(0, 1, 1);
+
+  // Face belakang
+  glColor3f(0.1f, 0.0f, 0.0f);  // Coklat
+  glVertex3f(0, 0, 0);
+  glVertex3f(1, 0, 0);
+  glVertex3f(1, 1, 0);
+  glVertex3f(0, 1, 0);
+
+  // Face kiri
+  glColor3f(0.1f, 0.0f, 0.0f);  // Coklat
+  glVertex3f(0, 0, 0);
+  glVertex3f(0, 0, 1);
+  glVertex3f(0, 1, 1);
+  glVertex3f(0, 1, 0);
+
+  // Face kanan
+  glColor3f(0.1f, 0.0f, 0.0f);  // Coklat
+  glVertex3f(1, 0, 0);
+  glVertex3f(1, 0, 1);
+  glVertex3f(1, 1, 1);
+  glVertex3f(1, 1, 0);
 
   glEnd();
 }
