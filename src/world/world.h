@@ -11,6 +11,7 @@ class World {
 
   void draw(const glm::mat4& view_matrix,
             const glm::mat4& projection_matrix) const;
+  std::vector<Chunk>& get_chunks();
 
  private:
   std::vector<Chunk> chunks_;

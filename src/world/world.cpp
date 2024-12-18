@@ -14,3 +14,5 @@ void World::draw(const glm::mat4& view_matrix,
     chunk.draw(view_matrix, projection_matrix);
   }
 }
+
+std::vector<Chunk>& World::get_chunks() { return chunks_; }

@@ -3,6 +3,9 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <vector>
+
+#include "../block/block.h"
 
 class Camera {
  public:
@@ -15,7 +18,10 @@ class Camera {
 
   void update();
   void process_mouse_movement(float xoffset, float yoffset);
-  void process_keyboard(glm::vec3 direction, float deltaTime);
+  void process_keyboard(glm::vec3 direction, float deltaTime,
+                        const std::vector<Block>& blocks);
+  bool check_collision(const glm::vec3& new_position,
+                       const std::vector<Block>& blocks) const;
 
   glm::mat4 get_view_matrix() const;
   glm::mat4 get_projection_matrix() const;

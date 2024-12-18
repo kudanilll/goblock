@@ -12,6 +12,8 @@ class Chunk {
   void draw(const glm::mat4& view_matrix,
             const glm::mat4& projection_matrix) const;
 
+  std::vector<Block> get_blocks() const;
+
  private:
   glm::vec3 position_;
   std::vector<Block> blocks_;

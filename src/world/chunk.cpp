@@ -18,3 +18,5 @@ void Chunk::draw(const glm::mat4& view_matrix,
     block.draw(view_matrix, projection_matrix);
   }
 }
+
+std::vector<Block> Chunk::get_blocks() const { return blocks_; }
