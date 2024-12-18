@@ -1,0 +1,2 @@
+#define PROJECT_SOURCE_DIR "@CMAKE_SOURCE_DIR@"
+#define FONT_PATH "@CMAKE_SOURCE_DIR@/assets/fonts/inter-medium.ttf"

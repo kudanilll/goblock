@@ -22,23 +22,15 @@ file(GLOB_RECURSE HEADERS "include/*.h")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(SRC_DIR ${CMAKE_SOURCE_DIR}/src)
 set(INCLUDE_DIR ${CMAKE_SOURCE_DIR}/include)
-set(IMGUI_DIR ${CMAKE_SOURCE_DIR}/external/imgui)
+
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/config.h.in ${CMAKE_CURRENT_BINARY_DIR}/config.h)
+include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
 # Include directories for headers
-include_directories(${INCLUDE_DIR} ${IMGUI_DIR})
-
-# ImGui
-set(IMGUI_SOURCES
-    external/imgui/imgui.cpp
-    external/imgui/imgui_draw.cpp
-    external/imgui/imgui_widgets.cpp
-    external/imgui/imgui_tables.cpp
-    src/imgui_impl_glfw.cpp
-    src/imgui_impl_opengl3.cpp
-)
+include_directories(${INCLUDE_DIR})
 
 # Add the executable
-add_executable(goblock ${SOURCES} ${HEADERS} ${IMGUI_SOURCES} ${GLUT_INCLUDE_DIRS})
+add_executable(goblock ${SOURCES} ${HEADERS} ${GLUT_INCLUDE_DIRS})
 
 # Find required packages
 find_package(OpenGL REQUIRED)
