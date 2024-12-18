@@ -1,4 +1,4 @@
-#include "control/control.h"
+#include "control.h"
 
 Control::Control(GLFWwindow* window, Camera& camera)
     : window(window),

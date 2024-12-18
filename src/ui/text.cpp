@@ -1,6 +1,6 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 
-#include "ui/text.h"
+#include "text.h"
 
 #include <GL/glew.h>
 

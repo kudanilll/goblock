@@ -1,4 +1,4 @@
-#include "block/block.h"
+#include "block.h"
 
 #include <GL/glew.h>
 

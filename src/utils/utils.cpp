@@ -1,4 +1,4 @@
-#include "utils/utils.h"
+#include "utils.h"
 
 #include <GL/glew.h>
 #include <GL/glut.h>

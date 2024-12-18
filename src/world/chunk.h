@@ -3,7 +3,7 @@
 
 #include <vector>
 
-#include "block/block.h"
+#include "../block/block.h"
 
 class Chunk {
  public:

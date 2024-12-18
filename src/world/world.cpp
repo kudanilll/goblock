@@ -1,4 +1,4 @@
-#include "world/world.h"
+#include "world.h"
 
 World::World() {
   for (int x = 0; x < WORLD_SIZE; ++x) {
