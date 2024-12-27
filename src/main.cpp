@@ -13,7 +13,24 @@
 #include "utils/utils.h"
 #include "world/world.h"
 
-char buff[0xFF];
+char player_pos_buff[0xFF];
+char fps_buff[0xFF];
+
+// FPS variable
+double last_time = 0.0;
+int frame_count = 0;
+float fps = 0.0f;
+
+void update_fps() {
+  double current_time = glfwGetTime();
+  frame_count++;
+  // Hitung FPS setiap detik
+  if (current_time - last_time >= 1.0) {
+    fps = frame_count / (current_time - last_time);
+    frame_count = 0;
+    last_time = current_time;
+  }
+}
 
 // Init OpenGL dan GLFW
 GLFWwindow* initialize_window(int width, int height, const char* title) {
@@ -64,7 +81,13 @@ int main(int argc, char** argv) {
   Camera camera;
   Control control(window, camera, blocks, block_size);
 
+  // Init last time
+  last_time = glfwGetTime();
+
   while (!glfwWindowShouldClose(window)) {
+    // Update FPS
+    update_fps();
+
     // Input & Update
     control.handle_input(blocks);
     camera.update();
@@ -75,10 +98,16 @@ int main(int argc, char** argv) {
     world.draw(camera.get_view_matrix(), camera.get_projection_matrix());
 
     // Player position
-    snprintf(buff, sizeof(buff), "Player Position: (%f, %f, %f)",
-             camera.position.x, camera.position.y, camera.position.z);
+    snprintf(player_pos_buff, sizeof(player_pos_buff),
+             "Player Position: (%f, %f, %f)", camera.position.x,
+             camera.position.y, camera.position.z);
     glColor3f(1.0f, 1.0f, 1.0f);
-    utils::draw_text(buff, 10.0f, 10.0f);
+    utils::draw_text(player_pos_buff, 10.0f, 10.0f);
+
+    // FPS
+    snprintf(fps_buff, sizeof(fps_buff), "FPS: %.2f", fps);
+    glColor3f(1.0f, 1.0f, 1.0f);
+    utils::draw_text(fps_buff, 10.0f, 30.0f);
 
     glfwSwapBuffers(window);
     glfwPollEvents();
