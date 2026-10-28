@@ -47,13 +47,7 @@ pub fn load_block_textures() -> LoadedTextures {
                 }
             });
         match image {
-            Some(image) => {
-                let mut tile = resample(&image, TILE_SIZE);
-                if texture == Texture::Water {
-                    make_see_through(&mut tile, texture.placeholder_color()[3]);
-                }
-                pixels.extend(tile);
-            }
+            Some(image) => pixels.extend(resample(&image, TILE_SIZE)),
             None => {
                 missing.push(texture.name());
                 pixels.extend(placeholder(texture, TILE_SIZE));
@@ -67,17 +61,6 @@ pub fn load_block_textures() -> LoadedTextures {
             pixels,
         },
         missing,
-    }
-}
-
-/// Give a fully opaque RGBA tile a uniform `alpha`. Image generators often
-/// cannot save partial transparency, and opaque water would hide the floor
-/// beneath it. Tiles that already carry some transparency are left alone.
-fn make_see_through(tile: &mut [u8], alpha: u8) {
-    if tile.chunks(4).all(|p| p[3] == 255) {
-        for pixel in tile.chunks_mut(4) {
-            pixel[3] = alpha;
-        }
     }
 }
 
@@ -295,17 +278,6 @@ mod tests {
             layer_bytes * Texture::ALL.len()
         );
         assert_eq!(loaded.textures.layers() as usize, Texture::ALL.len());
-    }
-
-    #[test]
-    fn opaque_water_becomes_see_through() {
-        let mut opaque = [10, 20, 30, 255].repeat(4);
-        make_see_through(&mut opaque, 170);
-        assert!(opaque.chunks(4).all(|p| p[3] == 170));
-
-        let mut tinted = [10, 20, 30, 200].repeat(4);
-        make_see_through(&mut tinted, 170);
-        assert!(tinted.chunks(4).all(|p| p[3] == 200));
     }
 
     #[test]

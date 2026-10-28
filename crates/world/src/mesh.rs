@@ -17,7 +17,8 @@ pub struct ChunkVertex {
     /// Texture u and v (0 or 1), texture array layer, and ambient occlusion
     /// (255 for fully open).
     pub uv_layer_shade: [u8; 4],
-    /// Biome tint in sRGB. Alpha is unused.
+    /// Biome tint in sRGB. For water, alpha is the number of water blocks
+    /// below the face, which sets how much of the floor shows through.
     pub tint: [u8; 4],
 }
 
@@ -102,6 +103,13 @@ pub fn build_mesh(chunks: [&Chunk; 9]) -> ChunkMesh {
                     };
                     let water_surface =
                         block == BlockId::Water && area.get(x, y + 1, z) != BlockId::Water;
+                    // Only the surface is looked through from above, so only
+                    // it needs the depth of the water beneath it.
+                    let water_depth = if water_surface {
+                        water_depth(centre, x, y, z)
+                    } else {
+                        1
+                    };
 
                     for face in Face::ALL {
                         let n = face.normal();
@@ -114,6 +122,7 @@ pub fn build_mesh(chunks: [&Chunk; 9]) -> ChunkMesh {
                             face,
                             pos: IVec3::new(x, y, z),
                             water_surface,
+                            water_depth,
                             biome: centre.biome(x, z),
                         };
                         quad.emit(&area, &mut layers[layer as usize]);
@@ -140,11 +149,19 @@ pub fn build_mesh(chunks: [&Chunk; 9]) -> ChunkMesh {
     mesh
 }
 
+/// Water blocks from (x, y, z) straight down to the floor, at most 255.
+fn water_depth(chunk: &Chunk, x: i32, y: i32, z: i32) -> u8 {
+    (0..255)
+        .take_while(|&d| chunk.get(x, y - d, z) == BlockId::Water)
+        .count() as u8
+}
+
 struct Quad {
     block: BlockId,
     face: Face,
     pos: IVec3,
     water_surface: bool,
+    water_depth: u8,
     biome: Biome,
 }
 
@@ -189,7 +206,7 @@ impl Quad {
                     face,
                 ],
                 uv_layer_shade: [UVS[i][0], UVS[i][1], layer, AO_LEVELS[ao[i]]],
-                tint: [r, g, b, 255],
+                tint: [r, g, b, self.water_depth],
             });
         }
     }
@@ -359,10 +376,25 @@ mod tests {
         use crate::block::Texture;
         assert_eq!(layer_of(0), Texture::Stone as u8);
         assert_eq!(layer_of(mesh.opaque_quads), Texture::Leaves as u8);
-        assert_eq!(
-            layer_of(mesh.opaque_quads + mesh.cutout_quads),
-            Texture::Water as u8
-        );
+        // Water comes last, carrying its depth instead of a texture.
+        let first_water = (mesh.opaque_quads + mesh.cutout_quads) as usize * 4;
+        assert_eq!(mesh.vertices[first_water].tint[3], 1);
+    }
+
+    #[test]
+    fn water_surfaces_carry_the_depth_below_them() {
+        let mut chunk = Chunk::new(IVec2::ZERO);
+        chunk.set(4, 60, 4, BlockId::Sand);
+        for y in 61..64 {
+            chunk.set(4, y, 4, BlockId::Water);
+        }
+        let mesh = mesh_alone(&chunk);
+        let top = mesh
+            .vertices
+            .chunks(4)
+            .find(|quad| quad[0].position[3] == Face::Up as u16 && quad[0].position[1] > 63 * 16)
+            .expect("water surface");
+        assert_eq!(top[0].tint[3], 3);
     }
 
     #[test]

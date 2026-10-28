@@ -17,14 +17,13 @@ pub enum Texture {
     Gravel,
     Snow,
     Ice,
-    Water,
     LogSide,
     LogTop,
     Leaves,
 }
 
 impl Texture {
-    pub const ALL: [Texture; 14] = [
+    pub const ALL: [Texture; 13] = [
         Texture::Stone,
         Texture::Dirt,
         Texture::GrassTop,
@@ -35,7 +34,6 @@ impl Texture {
         Texture::Gravel,
         Texture::Snow,
         Texture::Ice,
-        Texture::Water,
         Texture::LogSide,
         Texture::LogTop,
         Texture::Leaves,
@@ -53,7 +51,6 @@ impl Texture {
             Texture::Gravel => "gravel",
             Texture::Snow => "snow",
             Texture::Ice => "ice",
-            Texture::Water => "water",
             Texture::LogSide => "log_side",
             Texture::LogTop => "log_top",
             Texture::Leaves => "leaves",
@@ -74,7 +71,6 @@ impl Texture {
             Texture::Gravel => [134, 128, 124, 255],
             Texture::Snow => [240, 246, 250, 255],
             Texture::Ice => [158, 194, 240, 255],
-            Texture::Water => [52, 96, 190, 170],
             Texture::LogSide => [104, 80, 50, 255],
             Texture::LogTop => [160, 128, 84, 255],
             Texture::Leaves => [60, 120, 48, 230],
@@ -192,7 +188,8 @@ impl BlockId {
             BlockId::Gravel => Texture::Gravel,
             BlockId::Snow => Texture::Snow,
             BlockId::Ice => Texture::Ice,
-            BlockId::Water => Texture::Water,
+            // Water is shaded entirely in the shader; its layer is never read.
+            BlockId::Water => Texture::Stone,
             BlockId::Log if end => Texture::LogTop,
             BlockId::Log => Texture::LogSide,
             BlockId::Leaves => Texture::Leaves,
