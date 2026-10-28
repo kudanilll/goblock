@@ -228,17 +228,16 @@ impl ChunkBuffers {
     }
 
     /// Draw `layer` of each chunk in `visible`, in the given order. Each
-    /// chunk's offset goes into the push constants at byte `offset_push`.
+    /// chunk's offset from the camera is the pipeline's only push constant.
     ///
     /// # Safety
-    /// `cmd` must be inside the render pass with a block pipeline and the
+    /// `cmd` must be inside a render pass with a chunk pipeline and the
     /// index buffer bound.
     pub unsafe fn draw<'a>(
         &self,
         device: &Device,
         cmd: vk::CommandBuffer,
         layout: vk::PipelineLayout,
-        offset_push: u32,
         layer: usize,
         visible: impl Iterator<Item = &'a VisibleChunk>,
     ) {
@@ -256,7 +255,7 @@ impl ChunkBuffers {
                 cmd,
                 layout,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                offset_push,
+                0,
                 bytemuck::cast_slice(&offset),
             );
             device

@@ -11,9 +11,11 @@ use crate::chunk::{Chunk, CHUNK_SIZE};
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ChunkVertex {
-    /// Position inside the chunk in sixteenths of a block. `w` is unused.
+    /// Position inside the chunk in sixteenths of a block. `w` is the face,
+    /// an index into [`Face::ALL`], from which the shaders get the normal.
     pub position: [u16; 4],
-    /// Texture u and v (0 or 1), texture array layer, and brightness.
+    /// Texture u and v (0 or 1), texture array layer, and ambient occlusion
+    /// (255 for fully open).
     pub uv_layer_shade: [u8; 4],
     /// Biome tint in sRGB. Alpha is unused.
     pub tint: [u8; 4],
@@ -42,23 +44,12 @@ impl ChunkMesh {
     }
 }
 
-/// Brightness for 0 to 3 occluding blocks around a vertex.
-const AO_LEVELS: [f32; 4] = [0.45, 0.65, 0.82, 1.0];
+/// Ambient occlusion for 0 to 3 unblocked directions around a vertex.
+const AO_LEVELS: [u8; 4] = [115, 166, 209, 255];
 /// Texture coordinates for the four corners returned by [`corners`].
 const UVS: [[u8; 2]; 4] = [[0, 1], [1, 1], [1, 0], [0, 0]];
 /// Height of a water surface, in sixteenths of a block.
 const WATER_SURFACE: i32 = 14;
-
-/// Fixed brightness per face direction, so neighbouring sides read apart
-/// without a lighting model.
-fn face_shade(face: Face) -> f32 {
-    match face {
-        Face::Up => 1.0,
-        Face::Down => 0.5,
-        Face::North | Face::South => 0.8,
-        Face::West | Face::East => 0.65,
-    }
-}
 
 /// Corners of a face in counter-clockwise order seen from outside, starting
 /// at the bottom-left of the texture.
@@ -161,7 +152,7 @@ impl Quad {
     fn emit(&self, area: &Area, out: &mut Vec<ChunkVertex>) {
         let corners = corners(self.face);
         let layer = self.block.texture(self.face) as u8;
-        let shade = face_shade(self.face);
+        let face = self.face as u16;
         let [r, g, b] = match self.block.tint(self.face) {
             Tint::None => [255; 3],
             Tint::Foliage => self.biome.foliage_tint(),
@@ -190,15 +181,14 @@ impl Quad {
             } else {
                 cy * 16
             };
-            let brightness = (shade * AO_LEVELS[ao[i]] * 255.0).round() as u8;
             out.push(ChunkVertex {
                 position: [
                     ((self.pos.x + cx) * 16) as u16,
                     (self.pos.y * 16 + top) as u16,
                     ((self.pos.z + cz) * 16) as u16,
-                    0,
+                    face,
                 ],
-                uv_layer_shade: [UVS[i][0], UVS[i][1], layer, brightness],
+                uv_layer_shade: [UVS[i][0], UVS[i][1], layer, AO_LEVELS[ao[i]]],
                 tint: [r, g, b, 255],
             });
         }
@@ -283,6 +273,20 @@ mod tests {
         chunks[4] = &centre;
         chunks[5] = &east;
         assert_eq!(build_mesh(chunks).quad_count(), 5);
+    }
+
+    #[test]
+    fn vertices_name_their_face() {
+        let mut chunk = Chunk::new(IVec2::ZERO);
+        chunk.set(5, 70, 5, BlockId::Stone);
+        let mesh = mesh_alone(&chunk);
+        let centre = Vec3::new(5.5, 70.5, 5.5);
+        for quad in 0..6 {
+            let [a, _, c, _] = quad_positions(&mesh, quad);
+            let face = Face::ALL[mesh.vertices[quad * 4].position[3] as usize];
+            let outward = ((a + c) * 0.5 - centre) * 2.0;
+            assert_eq!(outward, face.normal().as_vec3(), "quad {quad}");
+        }
     }
 
     #[test]

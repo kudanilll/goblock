@@ -1,4 +1,8 @@
 //! Per-frame work: wait, acquire, upload, record, submit, present.
+//!
+//! Each frame first renders the sun's shadow map, then the main pass: the
+//! sky, the chunks layer by layer, and the HUD. Lighting, fog and tone
+//! mapping happen in the shaders, fed by one uniform block per frame.
 
 use ash::vk;
 use glam::{IVec2, Mat4, Vec3};
@@ -8,28 +12,27 @@ use super::chunks::{ChunkBuffers, VisibleChunk, LAYERS, VERTEX_STRIDE};
 use super::device::{Device, MAX_FRAMES_IN_FLIGHT};
 use super::error::VkError;
 use super::resources::{create_pipeline, DynamicBuffer, ImageData, PipelineConfig, Texture};
+use super::shadow::{shadow_matrix, ShadowMap};
 use super::swapchain::{FrameSync, Swapchain};
 use crate::block_textures::{build_mips, BlockTextures};
 use crate::font;
 
-/// Block push constants: view-projection (64 bytes), chunk offset (16), fog
-/// colour (16) and fog distances (16). Vulkan 1.0 only guarantees 128 bytes,
-/// so anything added has to fit in the last 16.
-const BLOCK_PUSH_SIZE: u32 = 112;
-/// Byte offset of the chunk offset inside the block push constants.
-const CHUNK_OFFSET_PUSH: u32 = 64;
-/// Sky push constants: inverse view-projection, zenith colour, horizon
-/// colour and sun direction.
-const SKY_PUSH_SIZE: u32 = 112;
+/// Chunk pipelines push one vec4: the chunk's origin relative to the camera.
+const CHUNK_PUSH_SIZE: u32 = 16;
+/// Size of the `Frame` uniform block in common.glsl: three mat4s and three
+/// vec4s.
+const FRAME_UNIFORM_SIZE: usize = 3 * 64 + 3 * 16;
 /// HUD vertices one frame can hold, six per glyph.
 const HUD_VERTEX_CAPACITY: usize = 4096;
-
-/// Sky colours in linear RGB. The horizon colour doubles as the fog colour,
-/// so distant terrain fades into the sky.
-const ZENITH: [f32; 4] = [0.16, 0.34, 0.75, 1.0];
-const HORIZON: [f32; 4] = [0.60, 0.74, 0.90, 1.0];
 /// Where fog begins, as a fraction of [`FrameView::fog_end`].
 const FOG_START: f32 = 0.6;
+/// Shadow-casting layers, in draw order: opaque blocks, then leaves.
+const SHADOW_LAYERS: usize = 2;
+
+/// Direction toward the sun: mid-afternoon, about 44° above the horizon.
+fn sun_direction() -> Vec3 {
+    Vec3::new(0.55, 0.62, 0.35).normalize()
+}
 
 /// What the camera sees this frame.
 pub struct FrameView {
@@ -38,8 +41,14 @@ pub struct FrameView {
     /// Projection times view, with the camera at the origin.
     pub view_projection: Mat4,
     /// Distance at which fog hides the world completely. Keep it inside the
-    /// loaded range so the edge of the world never shows.
+    /// loaded range so the edge of the world never shows. Sun shadows reach
+    /// this far as well.
     pub fog_end: f32,
+    /// Seconds since the game started, for moving water.
+    pub time: f32,
+    /// Whether the camera is in water, which swaps the sky and the fog for
+    /// murky water.
+    pub underwater: bool,
 }
 
 pub struct Renderer {
@@ -52,16 +61,23 @@ pub struct Renderer {
     command_buffers: Vec<vk::CommandBuffer>,
 
     chunks: ChunkBuffers,
+    shadow: ShadowMap,
     /// Opaque, cutout and translucent block pipelines, in draw order.
     block_pipelines: [(vk::Pipeline, vk::PipelineLayout); LAYERS],
+    /// Opaque and cutout shadow casters. Water casts no shadow.
+    shadow_pipelines: [(vk::Pipeline, vk::PipelineLayout); SHADOW_LAYERS],
     sky_pipeline: vk::Pipeline,
     sky_pipeline_layout: vk::PipelineLayout,
     hud_pipeline: vk::Pipeline,
     hud_pipeline_layout: vk::PipelineLayout,
 
-    texture_set_layout: vk::DescriptorSetLayout,
+    /// Frame uniforms, block textures and the shadow map.
+    frame_set_layout: vk::DescriptorSetLayout,
+    hud_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
-    block_set: vk::DescriptorSet,
+    /// One per frame in flight, each pointing at its own uniform buffer.
+    frame_sets: Vec<vk::DescriptorSet>,
+    frame_uniforms: Vec<DynamicBuffer>,
     hud_set: vk::DescriptorSet,
     block_texture: Texture,
     hud_texture: Texture,
@@ -87,18 +103,51 @@ impl Renderer {
     ) -> Result<Self, VkError> {
         let swapchain = Swapchain::new(&device, width, height)?;
         let frames = FrameSync::new(&device)?;
+        let shadow = ShadowMap::new(&device)?;
 
-        // Blocks and the HUD each sample one texture through one descriptor.
-        let bindings = [vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
-        let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
-        let texture_set_layout = device
+        let sampler_binding = |binding: u32| {
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(binding)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+        };
+        let frame_bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
+            sampler_binding(1),
+            sampler_binding(2),
+        ];
+        let frame_set_layout = device
             .device
-            .create_descriptor_set_layout(&layout_info, None)
+            .create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&frame_bindings),
+                None,
+            )
             .map_err(|e| VkError::new("create_descriptor_set_layout", e))?;
+        let hud_bindings = [sampler_binding(0)];
+        let hud_set_layout = device
+            .device
+            .create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&hud_bindings),
+                None,
+            )
+            .map_err(|e| VkError::new("create_descriptor_set_layout", e))?;
+
+        let chunk_binding = vec![vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(VERTEX_STRIDE)
+            .input_rate(vk::VertexInputRate::VERTEX)];
+        let chunk_attribute = |location: u32, format: vk::Format, offset: u32| {
+            vk::VertexInputAttributeDescription::default()
+                .location(location)
+                .binding(0)
+                .format(format)
+                .offset(offset)
+        };
 
         let mut block_pipelines = [(vk::Pipeline::null(), vk::PipelineLayout::null()); LAYERS];
         for (layer, slot) in block_pipelines.iter_mut().enumerate() {
@@ -107,37 +156,46 @@ impl Renderer {
             let config = PipelineConfig {
                 vs_bytes: include_bytes!(concat!(env!("OUT_DIR"), "/block.vert.spv")),
                 fs_bytes: include_bytes!(concat!(env!("OUT_DIR"), "/block.frag.spv")),
-                vertex_bindings: vec![vk::VertexInputBindingDescription::default()
-                    .binding(0)
-                    .stride(VERTEX_STRIDE)
-                    .input_rate(vk::VertexInputRate::VERTEX)],
+                vertex_bindings: chunk_binding.clone(),
                 vertex_attributes: vec![
-                    vk::VertexInputAttributeDescription::default()
-                        .location(0)
-                        .binding(0)
-                        .format(vk::Format::R16G16B16A16_UINT)
-                        .offset(0),
-                    vk::VertexInputAttributeDescription::default()
-                        .location(1)
-                        .binding(0)
-                        .format(vk::Format::R8G8B8A8_UINT)
-                        .offset(8),
-                    vk::VertexInputAttributeDescription::default()
-                        .location(2)
-                        .binding(0)
-                        .format(vk::Format::R8G8B8A8_UNORM)
-                        .offset(12),
+                    chunk_attribute(0, vk::Format::R16G16B16A16_UINT, 0),
+                    chunk_attribute(1, vk::Format::R8G8B8A8_UINT, 8),
+                    chunk_attribute(2, vk::Format::R8G8B8A8_UNORM, 12),
                 ],
-                push_constant_size: BLOCK_PUSH_SIZE,
+                push_constant_size: CHUNK_PUSH_SIZE,
                 depth_test: true,
                 depth_write: !translucent,
                 blend: translucent,
                 // Leaves and water are seen from both sides.
                 cull_back: layer == 0,
-                descriptor_layouts: vec![texture_set_layout],
+                depth_only: false,
+                descriptor_layouts: vec![frame_set_layout],
                 specialization: Some(layer as u32),
             };
             *slot = create_pipeline(&device, &config, device.render_pass)?;
+        }
+
+        let mut shadow_pipelines =
+            [(vk::Pipeline::null(), vk::PipelineLayout::null()); SHADOW_LAYERS];
+        for (layer, slot) in shadow_pipelines.iter_mut().enumerate() {
+            let config = PipelineConfig {
+                vs_bytes: include_bytes!(concat!(env!("OUT_DIR"), "/shadow.vert.spv")),
+                fs_bytes: include_bytes!(concat!(env!("OUT_DIR"), "/shadow.frag.spv")),
+                vertex_bindings: chunk_binding.clone(),
+                vertex_attributes: vec![
+                    chunk_attribute(0, vk::Format::R16G16B16A16_UINT, 0),
+                    chunk_attribute(1, vk::Format::R8G8B8A8_UINT, 8),
+                ],
+                push_constant_size: CHUNK_PUSH_SIZE,
+                depth_test: true,
+                depth_write: true,
+                blend: false,
+                cull_back: false,
+                depth_only: true,
+                descriptor_layouts: vec![frame_set_layout],
+                specialization: Some(layer as u32),
+            };
+            *slot = create_pipeline(&device, &config, shadow.render_pass)?;
         }
 
         let sky_config = PipelineConfig {
@@ -145,12 +203,13 @@ impl Renderer {
             fs_bytes: include_bytes!(concat!(env!("OUT_DIR"), "/sky.frag.spv")),
             vertex_bindings: vec![],
             vertex_attributes: vec![],
-            push_constant_size: SKY_PUSH_SIZE,
+            push_constant_size: 0,
             depth_test: false,
             depth_write: false,
             blend: false,
             cull_back: false,
-            descriptor_layouts: vec![],
+            depth_only: false,
+            descriptor_layouts: vec![frame_set_layout],
             specialization: None,
         };
         let (sky_pipeline, sky_pipeline_layout) =
@@ -181,7 +240,8 @@ impl Renderer {
             depth_write: false,
             blend: true,
             cull_back: false,
-            descriptor_layouts: vec![texture_set_layout],
+            depth_only: false,
+            descriptor_layouts: vec![hud_set_layout],
             specialization: None,
         };
         let (hud_pipeline, hud_pipeline_layout) =
@@ -224,47 +284,88 @@ impl Renderer {
             ),
         )?;
 
-        let pool_sizes = [vk::DescriptorPoolSize::default()
-            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(2)];
-        let descriptor_pool_info = vk::DescriptorPoolCreateInfo::default()
-            .max_sets(2)
-            .pool_sizes(&pool_sizes);
+        let frame_uniforms = (0..MAX_FRAMES_IN_FLIGHT)
+            .map(|_| {
+                DynamicBuffer::new(
+                    &device,
+                    FRAME_UNIFORM_SIZE as u64,
+                    vk::BufferUsageFlags::UNIFORM_BUFFER,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let frames_in_flight = MAX_FRAMES_IN_FLIGHT as u32;
+        let pool_sizes = [
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(frames_in_flight),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(2 * frames_in_flight + 1),
+        ];
         let descriptor_pool = device
             .device
-            .create_descriptor_pool(&descriptor_pool_info, None)
+            .create_descriptor_pool(
+                &vk::DescriptorPoolCreateInfo::default()
+                    .max_sets(frames_in_flight + 1)
+                    .pool_sizes(&pool_sizes),
+                None,
+            )
             .map_err(|e| VkError::new("create_descriptor_pool", e))?;
 
-        let set_layouts = [texture_set_layout; 2];
-        let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(descriptor_pool)
-            .set_layouts(&set_layouts);
-        let sets = device
+        let mut set_layouts = vec![frame_set_layout; MAX_FRAMES_IN_FLIGHT];
+        set_layouts.push(hud_set_layout);
+        let mut sets = device
             .device
-            .allocate_descriptor_sets(&alloc_info)
+            .allocate_descriptor_sets(
+                &vk::DescriptorSetAllocateInfo::default()
+                    .descriptor_pool(descriptor_pool)
+                    .set_layouts(&set_layouts),
+            )
             .map_err(|e| VkError::new("allocate_descriptor_sets", e))?;
-        let (block_set, hud_set) = (sets[0], sets[1]);
+        let hud_set = sets.pop().expect("one set per layout");
+        let frame_sets = sets;
 
-        let block_image = [vk::DescriptorImageInfo::default()
+        let image_info = |texture: &Texture| {
+            [vk::DescriptorImageInfo::default()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(texture.view)
+                .sampler(texture.sampler)]
+        };
+        let block_image = image_info(&block_texture);
+        let hud_image = image_info(&hud_texture);
+        let shadow_image = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(block_texture.view)
-            .sampler(block_texture.sampler)];
-        let hud_image = [vk::DescriptorImageInfo::default()
-            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .image_view(hud_texture.view)
-            .sampler(hud_texture.sampler)];
-        let writes = [
+            .image_view(shadow.view)
+            .sampler(shadow.sampler)];
+        let uniform_infos: Vec<[vk::DescriptorBufferInfo; 1]> = frame_uniforms
+            .iter()
+            .map(|buffer| {
+                [vk::DescriptorBufferInfo::default()
+                    .buffer(buffer.buffer)
+                    .range(FRAME_UNIFORM_SIZE as u64)]
+            })
+            .collect();
+
+        let image_write = |set: vk::DescriptorSet, binding: u32, info| {
             vk::WriteDescriptorSet::default()
-                .dst_set(block_set)
-                .dst_binding(0)
+                .dst_set(set)
+                .dst_binding(binding)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&block_image),
-            vk::WriteDescriptorSet::default()
-                .dst_set(hud_set)
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(&hud_image),
-        ];
+                .image_info(info)
+        };
+        let mut writes = vec![image_write(hud_set, 0, &hud_image)];
+        for (&set, uniform) in frame_sets.iter().zip(&uniform_infos) {
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(0)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(uniform),
+            );
+            writes.push(image_write(set, 1, &block_image));
+            writes.push(image_write(set, 2, &shadow_image));
+        }
         device.device.update_descriptor_sets(&writes, &[]);
 
         let pool_info = vk::CommandPoolCreateInfo::default()
@@ -278,7 +379,7 @@ impl Renderer {
         let alloc_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(MAX_FRAMES_IN_FLIGHT as u32);
+            .command_buffer_count(frames_in_flight);
         let command_buffers = device
             .device
             .allocate_command_buffers(&alloc_info)
@@ -302,14 +403,18 @@ impl Renderer {
             command_pool,
             command_buffers,
             chunks: ChunkBuffers::default(),
+            shadow,
             block_pipelines,
+            shadow_pipelines,
             sky_pipeline,
             sky_pipeline_layout,
             hud_pipeline,
             hud_pipeline_layout,
-            texture_set_layout,
+            frame_set_layout,
+            hud_set_layout,
             descriptor_pool,
-            block_set,
+            frame_sets,
+            frame_uniforms,
             hud_set,
             block_texture,
             hud_texture,
@@ -387,6 +492,13 @@ impl Renderer {
                 .map_err(|e| VkError::new("reset_fences", e))?;
             self.chunks.begin_frame(&self.device, frame);
 
+            let shadow_matrix =
+                shadow_matrix(view.camera, sun_direction(), view.fog_end, self.shadow.size);
+            self.frame_uniforms[frame].write(&frame_uniforms(
+                view,
+                &shadow_matrix,
+                self.shadow.texel(),
+            ));
             self.upload_hud(frame, hud_lines);
 
             let command_buffer = self.command_buffers[frame];
@@ -395,7 +507,7 @@ impl Renderer {
                 .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
                 .map_err(|e| VkError::new("reset_command_buffer", e))?;
 
-            self.record(command_buffer, frame, image_index, view)?;
+            self.record(command_buffer, frame, image_index, view, &shadow_matrix)?;
 
             let wait_semaphores = [image_available];
             let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -443,18 +555,42 @@ impl Renderer {
         frame: usize,
         image_index: usize,
         view: &FrameView,
+        shadow_matrix: &Mat4,
     ) -> Result<(), VkError> {
         let device = &self.device;
-        device
-            .device
-            .begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())
+        let d = &device.device;
+        d.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())
             .map_err(|e| VkError::new("begin_command_buffer", e))?;
 
-        // Copies have to land before the render pass reads them.
+        // Copies have to land before either pass reads them.
         self.chunks.record_uploads(device, cmd, frame);
+        let has_geometry = self.chunks.bind_indices(device, cmd);
+        let frame_set = [self.frame_sets[frame]];
+
+        // The shadow pass always runs, so the map is cleared and in the
+        // right layout even when shadows are off.
+        self.shadow.begin(device, cmd);
+        if has_geometry && self.shadow.size > 0 {
+            let casters = self.chunks.visible(view.camera, shadow_matrix);
+            for (layer, &(pipeline, layout)) in self.shadow_pipelines.iter().enumerate() {
+                d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+                d.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    layout,
+                    0,
+                    &frame_set,
+                    &[],
+                );
+                self.chunks.draw(device, cmd, layout, layer, casters.iter());
+            }
+        }
+        d.cmd_end_render_pass(cmd);
 
         let color = vk::ClearValue {
-            color: vk::ClearColorValue { float32: HORIZON },
+            color: vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
         };
         let depth = vk::ClearValue {
             depth_stencil: vk::ClearDepthStencilValue {
@@ -479,7 +615,6 @@ impl Renderer {
             .framebuffer(self.swapchain.framebuffers[image_index])
             .render_area(render_area)
             .clear_values(clears);
-        let d = &device.device;
         d.cmd_begin_render_pass(cmd, &info, vk::SubpassContents::INLINE);
 
         let viewport = vk::Viewport::default()
@@ -491,36 +626,19 @@ impl Renderer {
         d.cmd_set_scissor(cmd, 0, &[render_area]);
 
         // Sky first, with depth writes off, so the world draws over it.
-        let sun = Vec3::new(0.35, 0.55, 0.25)
-            .normalize()
-            .extend(0.0)
-            .to_array();
-        let mut sky_push = [0u8; SKY_PUSH_SIZE as usize];
-        sky_push[0..64].copy_from_slice(bytemuck::cast_slice(
-            &view.view_projection.inverse().to_cols_array(),
-        ));
-        sky_push[64..80].copy_from_slice(bytemuck::cast_slice(&ZENITH));
-        sky_push[80..96].copy_from_slice(bytemuck::cast_slice(&HORIZON));
-        sky_push[96..112].copy_from_slice(bytemuck::cast_slice(&sun));
         d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.sky_pipeline);
-        d.cmd_push_constants(
+        d.cmd_bind_descriptor_sets(
             cmd,
+            vk::PipelineBindPoint::GRAPHICS,
             self.sky_pipeline_layout,
-            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
             0,
-            &sky_push,
+            &frame_set,
+            &[],
         );
         d.cmd_draw(cmd, 3, 1, 0, 0);
 
-        let visible = self.chunks.visible(view.camera, &view.view_projection);
-        if !visible.is_empty() && self.chunks.bind_indices(device, cmd) {
-            let fog = [view.fog_end * FOG_START, view.fog_end, 0.0, 0.0];
-            let mut block_push = [0u8; BLOCK_PUSH_SIZE as usize];
-            block_push[0..64]
-                .copy_from_slice(bytemuck::cast_slice(&view.view_projection.to_cols_array()));
-            block_push[80..96].copy_from_slice(bytemuck::cast_slice(&HORIZON));
-            block_push[96..112].copy_from_slice(bytemuck::cast_slice(&fog));
-
+        if has_geometry {
+            let visible = self.chunks.visible(view.camera, &view.view_projection);
             for (layer, &(pipeline, layout)) in self.block_pipelines.iter().enumerate() {
                 d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
                 d.cmd_bind_descriptor_sets(
@@ -528,15 +646,8 @@ impl Renderer {
                     vk::PipelineBindPoint::GRAPHICS,
                     layout,
                     0,
-                    &[self.block_set],
+                    &frame_set,
                     &[],
-                );
-                d.cmd_push_constants(
-                    cmd,
-                    layout,
-                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                    0,
-                    &block_push,
                 );
                 // Solid layers go near to far so early depth testing skips
                 // hidden pixels; blended water goes far to near.
@@ -545,8 +656,7 @@ impl Renderer {
                 } else {
                     Box::new(visible.iter())
                 };
-                self.chunks
-                    .draw(device, cmd, layout, CHUNK_OFFSET_PUSH, layer, chunks);
+                self.chunks.draw(device, cmd, layout, layer, chunks);
             }
         }
 
@@ -600,29 +710,56 @@ impl Drop for Renderer {
             device.destroy_command_pool(self.command_pool, None);
 
             self.chunks.destroy(&self.device);
-            for buffer in &mut self.hud_vertices {
+            for buffer in self.hud_vertices.iter_mut().chain(&mut self.frame_uniforms) {
                 buffer.destroy(&self.device);
             }
             self.block_texture.destroy(&self.device);
             self.hud_texture.destroy(&self.device);
 
             device.destroy_descriptor_pool(self.descriptor_pool, None);
-            device.destroy_descriptor_set_layout(self.texture_set_layout, None);
+            device.destroy_descriptor_set_layout(self.frame_set_layout, None);
+            device.destroy_descriptor_set_layout(self.hud_set_layout, None);
 
             let others = [
                 (self.sky_pipeline, self.sky_pipeline_layout),
                 (self.hud_pipeline, self.hud_pipeline_layout),
             ];
-            for (pipeline, layout) in self.block_pipelines.into_iter().chain(others) {
+            let pipelines = self
+                .block_pipelines
+                .into_iter()
+                .chain(self.shadow_pipelines)
+                .chain(others);
+            for (pipeline, layout) in pipelines {
                 device.destroy_pipeline(pipeline, None);
                 device.destroy_pipeline_layout(layout, None);
             }
+            self.shadow.destroy(&self.device);
 
             FrameSync::destroy_all(&self.device, &self.frames);
             self.swapchain.destroy(&self.device);
             self.device.destroy();
         }
     }
+}
+
+/// The `Frame` uniform block from common.glsl, laid out by std140 rules:
+/// view-projection, its inverse and the shadow matrix, then the camera
+/// position with the time, the sun direction with the shadow texel size,
+/// and the fog distances with the underwater flag.
+fn frame_uniforms(view: &FrameView, shadow_matrix: &Mat4, shadow_texel: f32) -> Vec<u8> {
+    let sun = sun_direction();
+    let camera = view.camera;
+    let underwater = if view.underwater { 1.0 } else { 0.0 };
+    let floats: Vec<f32> = [
+        view.view_projection.to_cols_array().as_slice(),
+        view.view_projection.inverse().to_cols_array().as_slice(),
+        shadow_matrix.to_cols_array().as_slice(),
+        &[camera.x, camera.y, camera.z, view.time],
+        &[sun.x, sun.y, sun.z, shadow_texel],
+        &[view.fog_end * FOG_START, view.fog_end, underwater, 0.0],
+    ]
+    .concat();
+    bytemuck::cast_slice(&floats).to_vec()
 }
 
 fn sampler_info(
@@ -687,5 +824,34 @@ fn push_glyph(out: &mut Vec<HudVertex>, ch: char, x: f32, y: f32, w: f32, h: f32
             pos: [px, py],
             uv: [u, v],
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_uniforms_follow_the_std140_layout() {
+        let view = FrameView {
+            camera: Vec3::new(1.0, 2.0, 3.0),
+            view_projection: Mat4::IDENTITY,
+            fog_end: 100.0,
+            time: 7.0,
+            underwater: true,
+        };
+        let bytes = frame_uniforms(&view, &Mat4::IDENTITY, 0.5);
+        assert_eq!(bytes.len(), FRAME_UNIFORM_SIZE);
+        let float =
+            |offset: usize| f32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        // cameraPosition starts after three mat4s.
+        assert_eq!(
+            [float(192), float(196), float(200), float(204)],
+            [1.0, 2.0, 3.0, 7.0]
+        );
+        assert_eq!(float(220), 0.5, "shadow texel size in sunDirection.w");
+        assert!((float(224) - 100.0 * FOG_START).abs() < 1e-4, "fog start");
+        assert_eq!(float(228), 100.0, "fog end");
+        assert_eq!(float(232), 1.0, "underwater flag in fog.z");
     }
 }

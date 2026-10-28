@@ -5,6 +5,7 @@ pub mod device;
 pub mod error;
 pub mod renderer;
 pub mod resources;
+pub mod shadow;
 pub mod swapchain;
 
 pub use error::VkError;

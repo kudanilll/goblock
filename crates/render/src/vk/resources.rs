@@ -393,6 +393,9 @@ pub struct PipelineConfig {
     pub depth_write: bool,
     pub blend: bool,
     pub cull_back: bool,
+    /// Render depth only, for the shadow map: one sample, no colour output,
+    /// and a depth bias so surfaces do not shadow themselves.
+    pub depth_only: bool,
     pub descriptor_layouts: Vec<vk::DescriptorSetLayout>,
     /// Value for specialization constant 0 in both shader stages, if the
     /// shaders declare one.
@@ -459,10 +462,18 @@ pub fn create_pipeline(
         // Faces are wound counter-clockwise seen from outside the block. The
         // projection flips Y, which keeps that winding counter-clockwise on
         // screen.
-        .front_face(vk::FrontFace::COUNTER_CLOCKWISE);
+        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+        .depth_bias_enable(config.depth_only)
+        .depth_bias_constant_factor(1.5)
+        .depth_bias_slope_factor(2.0);
 
-    let multisample = vk::PipelineMultisampleStateCreateInfo::default()
-        .rasterization_samples(device.msaa_samples);
+    let samples = if config.depth_only {
+        vk::SampleCountFlags::TYPE_1
+    } else {
+        device.msaa_samples
+    };
+    let multisample =
+        vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(samples);
 
     let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
         .depth_test_enable(config.depth_test)
@@ -481,16 +492,25 @@ pub fn create_pipeline(
 
     let blend_attachments = [blend_attachment];
     let color_blend =
-        vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
+        vk::PipelineColorBlendStateCreateInfo::default().attachments(if config.depth_only {
+            &[]
+        } else {
+            &blend_attachments
+        });
 
-    let push_ranges = [vk::PushConstantRange::default()
+    let push_range = [vk::PushConstantRange::default()
         .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
         .offset(0)
         .size(config.push_constant_size)];
+    let push_ranges: &[vk::PushConstantRange] = if config.push_constant_size == 0 {
+        &[]
+    } else {
+        &push_range
+    };
 
     let layout_info = vk::PipelineLayoutCreateInfo::default()
         .set_layouts(&config.descriptor_layouts)
-        .push_constant_ranges(&push_ranges);
+        .push_constant_ranges(push_ranges);
 
     let layout = unsafe { device.device.create_pipeline_layout(&layout_info, None) }
         .map_err(|e| VkError::new("create_pipeline_layout", e))?;

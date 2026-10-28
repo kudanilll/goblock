@@ -5,7 +5,7 @@ use std::time::Instant;
 use glam::Vec3;
 
 use goblock_input::{Camera, InputState};
-use goblock_world::{World, WorldEvent, CHUNK_SIZE};
+use goblock_world::{BlockId, World, WorldEvent, CHUNK_SIZE};
 
 /// Chunks kept meshed around the player.
 pub const VIEW_DISTANCE: i32 = 12;
@@ -15,6 +15,7 @@ pub struct Game {
     pub world: World,
     screen_width: f32,
     screen_height: f32,
+    start: Instant,
     last_frame: Instant,
     fps_accum: f32,
     fps_frames: u32,
@@ -37,6 +38,7 @@ impl Game {
             world,
             screen_width: 800.0,
             screen_height: 600.0,
+            start: Instant::now(),
             last_frame: Instant::now(),
             fps_accum: 0.0,
             fps_frames: 0,
@@ -50,6 +52,16 @@ impl Game {
 
     pub fn set_last_frame(&mut self, now: Instant) {
         self.last_frame = now;
+    }
+
+    /// Seconds since the game started.
+    pub fn elapsed(&self) -> f32 {
+        self.start.elapsed().as_secs_f32()
+    }
+
+    pub fn underwater(&self) -> bool {
+        let eye = self.camera.position.floor().as_ivec3();
+        self.world.block_at(eye) == BlockId::Water
     }
 
     pub fn set_screen_size(&mut self, size: winit::dpi::PhysicalSize<u32>) {

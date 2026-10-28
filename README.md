@@ -57,6 +57,8 @@ Block textures are PNG files in `assets/textures/blocks/`, one per name in `gobl
 
 GLSL lives in `shaders/vulkan/` and is compiled by `crates/render/build.rs` into `${OUT_DIR}` with `glslc`, then embedded in the binary. The shaders target Vulkan 1.0, so the output is SPIR-V 1.0. Debug builds turn on the validation layer when it is installed and print its messages to stderr.
 
+Lighting is done in linear HDR and tone mapped at the end: sunlight with soft shadows from a sun shadow map, sky and ground light dimmed by ambient occlusion, a scattering sky with a sun disc, and fog that takes the colour of the sky behind the terrain. Water has moving waves, reflects the sky more at grazing angles, and catches the sun. Under water, the view fades into murky blue-green.
+
 ## Hardware support
 
 The renderer uses Vulkan 1.0 core plus `VK_KHR_surface` and `VK_KHR_swapchain`, and enables no optional device features. Push constants stay under the 128 bytes Vulkan 1.0 guarantees. A few extras are used only when the device has them:
@@ -69,6 +71,7 @@ The renderer uses Vulkan 1.0 core plus `VK_KHR_surface` and `VK_KHR_swapchain`, 
 | 32-bit or 24-bit depth | 16-bit depth                    |
 | Opaque composite alpha | Whatever the surface supports   |
 | Validation layer       | Skipped, with a note on stderr  |
+| Sun shadows            | Off on virtual and software GPUs; 1024 px on integrated, 2048 px on discrete |
 
 Discrete GPUs are preferred, but integrated, virtual and software devices are accepted too.
 

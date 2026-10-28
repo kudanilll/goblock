@@ -199,6 +199,8 @@ impl ActiveState {
             camera: camera.position,
             view_projection: camera.projection_matrix(self.game.aspect()) * camera.view_matrix(),
             fog_end: self.game.fog_end(),
+            time: self.game.elapsed(),
+            underwater: self.game.underwater(),
         };
         let lines = self.game.hud_lines(self.renderer.chunk_count());
         self.renderer.draw_frame(&view, &lines)?;

@@ -60,7 +60,13 @@ fn main() {
 
     let glslc = find_glslc().expect("glslc path");
 
-    let shaders = ["sky", "block", "hud"];
+    let shaders = ["sky", "block", "shadow", "hud"];
+
+    // Shared code that the shaders pull in with #include.
+    println!(
+        "cargo:rerun-if-changed={}",
+        shader_dir.join("common.glsl").display()
+    );
 
     for name in shaders {
         for stage in ["vert", "frag"] {
@@ -72,6 +78,8 @@ fn main() {
             let result = Command::new(&glslc)
                 .arg("--target-env=vulkan1.0")
                 .arg("-O")
+                .arg("-I")
+                .arg(&shader_dir)
                 .arg(&input)
                 .arg("-o")
                 .arg(&output)
