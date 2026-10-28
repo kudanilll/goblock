@@ -1,4 +1,4 @@
-//! GPU buffers, the font atlas texture, and pipeline creation helpers.
+//! GPU buffers, textures, and pipeline creation helpers.
 
 use ash::vk;
 
@@ -6,8 +6,46 @@ use super::device::Device;
 use super::error::VkError;
 use super::swapchain::find_memory_type;
 
+/// Create a buffer and bind fresh memory with `properties` to it.
+fn allocate_buffer(
+    device: &Device,
+    size: u64,
+    usage: vk::BufferUsageFlags,
+    properties: vk::MemoryPropertyFlags,
+) -> Result<(vk::Buffer, vk::DeviceMemory, u64), VkError> {
+    let info = vk::BufferCreateInfo::default()
+        .size(size)
+        .usage(usage)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+    let buffer = unsafe { device.device.create_buffer(&info, None) }
+        .map_err(|e| VkError::new("create_buffer", e))?;
+
+    let req = unsafe { device.device.get_buffer_memory_requirements(buffer) };
+    let bound =
+        find_memory_type(device, req.memory_type_bits, properties).and_then(|memory_type| {
+            let alloc = vk::MemoryAllocateInfo::default()
+                .allocation_size(req.size)
+                .memory_type_index(memory_type);
+            let memory = unsafe { device.device.allocate_memory(&alloc, None) }
+                .map_err(|e| VkError::new("allocate_memory", e))?;
+            if let Err(e) = unsafe { device.device.bind_buffer_memory(buffer, memory, 0) } {
+                unsafe { device.device.free_memory(memory, None) };
+                return Err(VkError::new("bind_buffer_memory", e));
+            }
+            Ok(memory)
+        });
+
+    match bound {
+        Ok(memory) => Ok((buffer, memory, req.size)),
+        Err(e) => {
+            unsafe { device.device.destroy_buffer(buffer, None) };
+            Err(e)
+        }
+    }
+}
+
 /// A host-visible buffer that stays mapped. Holds per-frame vertex data, and
-/// doubles as the staging buffer for texture uploads.
+/// doubles as the staging buffer for uploads.
 pub struct DynamicBuffer {
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
@@ -17,42 +55,23 @@ pub struct DynamicBuffer {
 
 impl DynamicBuffer {
     pub fn new(device: &Device, size: u64, usage: vk::BufferUsageFlags) -> Result<Self, VkError> {
-        let info = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        let buffer = unsafe { device.device.create_buffer(&info, None) }
-            .map_err(|e| VkError::new("create_buffer", e))?;
-
-        let req = unsafe { device.device.get_buffer_memory_requirements(buffer) };
-        let memory_type = find_memory_type(
+        let (buffer, memory, size) = allocate_buffer(
             device,
-            req.memory_type_bits,
+            size,
+            usage,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         )?;
-
-        let alloc = vk::MemoryAllocateInfo::default()
-            .allocation_size(req.size)
-            .memory_type_index(memory_type);
-
-        let memory = unsafe { device.device.allocate_memory(&alloc, None) }
-            .map_err(|e| VkError::new("allocate_memory", e))?;
-
-        unsafe { device.device.bind_buffer_memory(buffer, memory, 0) }
-            .map_err(|e| VkError::new("bind_buffer_memory", e))?;
-
         let mapped = unsafe {
             device
                 .device
-                .map_memory(memory, 0, req.size, vk::MemoryMapFlags::empty())
+                .map_memory(memory, 0, size, vk::MemoryMapFlags::empty())
         }
         .map_err(|e| VkError::new("map_memory", e))? as *mut u8;
 
         Ok(Self {
             buffer,
             memory,
-            size: req.size,
+            size,
             mapped,
         })
     }
@@ -66,7 +85,7 @@ impl DynamicBuffer {
     }
 
     /// # Safety
-    /// Requires idle device.
+    /// The GPU must be done with the buffer.
     pub unsafe fn destroy(&mut self, device: &Device) {
         device.device.unmap_memory(self.memory);
         device.device.destroy_buffer(self.buffer, None);
@@ -74,85 +93,53 @@ impl DynamicBuffer {
     }
 }
 
-/// Vertex data written once at startup. It lives in host-visible memory,
-/// which every Vulkan device has, so no staging copy is needed.
-pub struct StaticBuffer {
+/// A buffer in device-local memory, filled by copying from a staging buffer.
+pub struct GpuBuffer {
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
-    pub count: u32,
 }
 
-impl StaticBuffer {
-    pub fn new<T: Copy>(
-        device: &Device,
-        data: &[T],
-        usage: vk::BufferUsageFlags,
-    ) -> Result<Self, VkError> {
-        let size = std::mem::size_of_val(data) as u64;
-        if size == 0 {
-            return Ok(Self {
-                buffer: vk::Buffer::null(),
-                memory: vk::DeviceMemory::null(),
-                count: 0,
-            });
-        }
-
-        let info = vk::BufferCreateInfo::default()
-            .size(size)
-            .usage(usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        let buffer = unsafe { device.device.create_buffer(&info, None) }
-            .map_err(|e| VkError::new("create_buffer", e))?;
-
-        let req = unsafe { device.device.get_buffer_memory_requirements(buffer) };
-        let memory_type = find_memory_type(
+impl GpuBuffer {
+    pub fn new(device: &Device, size: u64, usage: vk::BufferUsageFlags) -> Result<Self, VkError> {
+        let (buffer, memory, _) = allocate_buffer(
             device,
-            req.memory_type_bits,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            size,
+            usage | vk::BufferUsageFlags::TRANSFER_DST,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
-
-        let alloc = vk::MemoryAllocateInfo::default()
-            .allocation_size(req.size)
-            .memory_type_index(memory_type);
-
-        let memory = unsafe { device.device.allocate_memory(&alloc, None) }
-            .map_err(|e| VkError::new("allocate_memory", e))?;
-
-        unsafe { device.device.bind_buffer_memory(buffer, memory, 0) }
-            .map_err(|e| VkError::new("bind_buffer_memory", e))?;
-
-        let mapped = unsafe {
-            device
-                .device
-                .map_memory(memory, 0, req.size, vk::MemoryMapFlags::empty())
-        }
-        .map_err(|e| VkError::new("map_memory", e))? as *mut u8;
-
-        unsafe {
-            std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, mapped, size as usize);
-            device.device.unmap_memory(memory);
-        }
-
-        Ok(Self {
-            buffer,
-            memory,
-            count: data.len() as u32,
-        })
+        Ok(Self { buffer, memory })
     }
 
     /// # Safety
-    /// Requires idle device.
+    /// The GPU must be done with the buffer.
     pub unsafe fn destroy(&mut self, device: &Device) {
-        if self.buffer == vk::Buffer::null() {
-            return;
-        }
         device.device.destroy_buffer(self.buffer, None);
         device.device.free_memory(self.memory, None);
     }
 }
 
-/// Single-channel font atlas texture plus its sampler.
+/// Pixels for a texture: every array layer of mip level 0, then every layer
+/// of level 1, and so on, each one tightly packed.
+pub struct ImageData<'a> {
+    pub format: vk::Format,
+    pub bytes_per_texel: u32,
+    pub width: u32,
+    pub height: u32,
+    pub layers: u32,
+    pub levels: u32,
+    pub view_type: vk::ImageViewType,
+    pub pixels: &'a [u8],
+}
+
+impl ImageData<'_> {
+    fn level_size(&self, level: u32) -> u64 {
+        let w = (self.width >> level).max(1) as u64;
+        let h = (self.height >> level).max(1) as u64;
+        w * h * self.layers as u64 * self.bytes_per_texel as u64
+    }
+}
+
+/// A sampled image, its view, and its sampler.
 pub struct Texture {
     pub image: vk::Image,
     pub memory: vk::DeviceMemory,
@@ -161,23 +148,27 @@ pub struct Texture {
 }
 
 impl Texture {
-    /// Upload `pixels`, one byte per texel in tightly packed rows, and leave
-    /// the image ready for sampling in fragment shaders.
+    /// Upload `data` and leave the image ready for sampling in fragment
+    /// shaders.
     ///
-    /// The data goes through a staging buffer into an optimally tiled image.
-    /// Vulkan 1.0 guarantees R8_UNORM sampling with optimal tiling only;
-    /// linear tiling support for it is optional.
-    pub fn new(device: &Device, pixels: &[u8], width: u32, height: u32) -> Result<Self, VkError> {
+    /// The pixels go through a staging buffer into an optimally tiled image.
+    /// Vulkan 1.0 guarantees sampling support for the formats used here with
+    /// optimal tiling only; linear tiling support is optional.
+    pub fn new(
+        device: &Device,
+        data: &ImageData,
+        sampler_info: &vk::SamplerCreateInfo,
+    ) -> Result<Self, VkError> {
         let info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
-            .format(vk::Format::R8_UNORM)
+            .format(data.format)
             .extent(vk::Extent3D {
-                width,
-                height,
+                width: data.width,
+                height: data.height,
                 depth: 1,
             })
-            .mip_levels(1)
-            .array_layers(1)
+            .mip_levels(data.levels)
+            .array_layers(data.layers)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
             .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
@@ -193,42 +184,39 @@ impl Texture {
             req.memory_type_bits,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
-
         let alloc = vk::MemoryAllocateInfo::default()
             .allocation_size(req.size)
             .memory_type_index(memory_type);
-
         let memory = unsafe { device.device.allocate_memory(&alloc, None) }
             .map_err(|e| VkError::new("allocate_memory", e))?;
-
         unsafe { device.device.bind_image_memory(image, memory, 0) }
             .map_err(|e| VkError::new("bind_image_memory", e))?;
 
         let mut staging = DynamicBuffer::new(
             device,
-            pixels.len() as u64,
+            data.pixels.len() as u64,
             vk::BufferUsageFlags::TRANSFER_SRC,
         )?;
-        staging.write(pixels);
-        let uploaded = unsafe { upload(device, staging.buffer, image, width, height) };
+        staging.write(data.pixels);
+        let uploaded = unsafe { upload(device, staging.buffer, image, data) };
         unsafe { staging.destroy(device) };
         uploaded?;
 
-        let view = super::swapchain::create_image_view(
-            device,
-            image,
-            vk::Format::R8_UNORM,
-            vk::ImageAspectFlags::COLOR,
-        )?;
+        let range = vk::ImageSubresourceRange::default()
+            .aspect_mask(vk::ImageAspectFlags::COLOR)
+            .base_mip_level(0)
+            .level_count(data.levels)
+            .base_array_layer(0)
+            .layer_count(data.layers);
+        let view_info = vk::ImageViewCreateInfo::default()
+            .image(image)
+            .view_type(data.view_type)
+            .format(data.format)
+            .subresource_range(range);
+        let view = unsafe { device.device.create_image_view(&view_info, None) }
+            .map_err(|e| VkError::new("create_image_view", e))?;
 
-        let sampler_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::NEAREST)
-            .min_filter(vk::Filter::NEAREST)
-            .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-            .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE);
-
-        let sampler = unsafe { device.device.create_sampler(&sampler_info, None) }
+        let sampler = unsafe { device.device.create_sampler(sampler_info, None) }
             .map_err(|e| VkError::new("create_sampler", e))?;
 
         Ok(Self {
@@ -240,7 +228,7 @@ impl Texture {
     }
 
     /// # Safety
-    /// Requires idle device.
+    /// The GPU must be done with the texture.
     pub unsafe fn destroy(&mut self, device: &Device) {
         device.device.destroy_sampler(self.sampler, None);
         device.device.destroy_image_view(self.view, None);
@@ -249,17 +237,101 @@ impl Texture {
     }
 }
 
-/// Copy `buffer` into `image` and move the image to SHADER_READ_ONLY_OPTIMAL,
-/// using a one-off command buffer. Blocks until the GPU is done.
+/// Copy every mip level of `data` from `buffer` into `image` and move the
+/// image to SHADER_READ_ONLY_OPTIMAL. Blocks until the GPU is done.
 ///
 /// # Safety
-/// `image` must be a fresh, single-mip R8 image with TRANSFER_DST usage.
+/// `image` must be freshly created to match `data`, with TRANSFER_DST usage.
 unsafe fn upload(
     device: &Device,
     buffer: vk::Buffer,
     image: vk::Image,
-    width: u32,
-    height: u32,
+    data: &ImageData,
+) -> Result<(), VkError> {
+    let range = vk::ImageSubresourceRange::default()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .base_mip_level(0)
+        .level_count(data.levels)
+        .base_array_layer(0)
+        .layer_count(data.layers);
+
+    let mut offset = 0;
+    let regions: Vec<vk::BufferImageCopy> = (0..data.levels)
+        .map(|level| {
+            let region = vk::BufferImageCopy::default()
+                .buffer_offset(offset)
+                .image_subresource(
+                    vk::ImageSubresourceLayers::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .mip_level(level)
+                        .base_array_layer(0)
+                        .layer_count(data.layers),
+                )
+                .image_extent(vk::Extent3D {
+                    width: (data.width >> level).max(1),
+                    height: (data.height >> level).max(1),
+                    depth: 1,
+                });
+            offset += data.level_size(level);
+            region
+        })
+        .collect();
+
+    submit_and_wait(device, |cmd| {
+        let to_transfer = vk::ImageMemoryBarrier::default()
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(range)
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+        device.device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_transfer],
+        );
+
+        // Buffer row length 0 means the rows are tightly packed.
+        device.device.cmd_copy_buffer_to_image(
+            cmd,
+            buffer,
+            image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &regions,
+        );
+
+        let to_shader = vk::ImageMemoryBarrier::default()
+            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(range)
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ);
+        device.device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_shader],
+        );
+    })
+}
+
+/// Record commands with `record` into a one-off command buffer, submit it,
+/// and wait for the GPU to finish.
+unsafe fn submit_and_wait(
+    device: &Device,
+    record: impl FnOnce(vk::CommandBuffer),
 ) -> Result<(), VkError> {
     let pool_info = vk::CommandPoolCreateInfo::default()
         .queue_family_index(device.queue_family)
@@ -284,85 +356,16 @@ unsafe fn upload(
         .device
         .begin_command_buffer(cmd, &begin)
         .map_err(|e| VkError::new("begin_command_buffer", e))?;
-
-    let range = vk::ImageSubresourceRange::default()
-        .aspect_mask(vk::ImageAspectFlags::COLOR)
-        .base_mip_level(0)
-        .level_count(1)
-        .base_array_layer(0)
-        .layer_count(1);
-
-    let to_transfer = vk::ImageMemoryBarrier::default()
-        .old_layout(vk::ImageLayout::UNDEFINED)
-        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(image)
-        .subresource_range(range)
-        .src_access_mask(vk::AccessFlags::empty())
-        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
-    device.device.cmd_pipeline_barrier(
-        cmd,
-        vk::PipelineStageFlags::TOP_OF_PIPE,
-        vk::PipelineStageFlags::TRANSFER,
-        vk::DependencyFlags::empty(),
-        &[],
-        &[],
-        &[to_transfer],
-    );
-
-    // Row length 0 means the buffer rows are tightly packed.
-    let region = vk::BufferImageCopy::default()
-        .image_subresource(
-            vk::ImageSubresourceLayers::default()
-                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                .mip_level(0)
-                .base_array_layer(0)
-                .layer_count(1),
-        )
-        .image_extent(vk::Extent3D {
-            width,
-            height,
-            depth: 1,
-        });
-    device.device.cmd_copy_buffer_to_image(
-        cmd,
-        buffer,
-        image,
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-        &[region],
-    );
-
-    let to_shader = vk::ImageMemoryBarrier::default()
-        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(image)
-        .subresource_range(range)
-        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-        .dst_access_mask(vk::AccessFlags::SHADER_READ);
-    device.device.cmd_pipeline_barrier(
-        cmd,
-        vk::PipelineStageFlags::TRANSFER,
-        vk::PipelineStageFlags::FRAGMENT_SHADER,
-        vk::DependencyFlags::empty(),
-        &[],
-        &[],
-        &[to_shader],
-    );
-
+    record(cmd);
     device
         .device
         .end_command_buffer(cmd)
         .map_err(|e| VkError::new("end_command_buffer", e))?;
 
-    let fence_info = vk::FenceCreateInfo::default();
     let fence = device
         .device
-        .create_fence(&fence_info, None)
+        .create_fence(&vk::FenceCreateInfo::default(), None)
         .map_err(|e| VkError::new("create_fence", e))?;
-
     let cmds = [cmd];
     let submit = vk::SubmitInfo::default().command_buffers(&cmds);
     device
@@ -391,6 +394,9 @@ pub struct PipelineConfig {
     pub blend: bool,
     pub cull_back: bool,
     pub descriptor_layouts: Vec<vk::DescriptorSetLayout>,
+    /// Value for specialization constant 0 in both shader stages, if the
+    /// shaders declare one.
+    pub specialization: Option<u32>,
 }
 
 pub fn create_pipeline(
@@ -401,7 +407,16 @@ pub fn create_pipeline(
     let vs = create_shader_module(device, config.vs_bytes)?;
     let fs = create_shader_module(device, config.fs_bytes)?;
 
-    let stages = [
+    let spec_value = config.specialization.unwrap_or(0).to_ne_bytes();
+    let spec_entries = [vk::SpecializationMapEntry::default()
+        .constant_id(0)
+        .offset(0)
+        .size(4)];
+    let spec_info = vk::SpecializationInfo::default()
+        .map_entries(&spec_entries)
+        .data(&spec_value);
+
+    let mut stages = [
         vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::VERTEX)
             .module(vs)
@@ -411,6 +426,11 @@ pub fn create_pipeline(
             .module(fs)
             .name(c"main"),
     ];
+    if config.specialization.is_some() {
+        for stage in &mut stages {
+            *stage = stage.specialization_info(&spec_info);
+        }
+    }
 
     let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
         .vertex_binding_descriptions(&config.vertex_bindings)

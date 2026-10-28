@@ -1,11 +1,9 @@
 //! First-person camera.
 //!
 //! Free flight with yaw/pitch mouse look, separate horizontal and vertical
-//! speeds, and a point collision test against blocks.
+//! speeds, and a point collision test against the world.
 
 use glam::{Mat4, Vec3};
-
-use goblock_world::Block;
 
 /// Camera state and the movement rules that act on it.
 #[derive(Debug, Clone)]
@@ -62,39 +60,37 @@ impl Camera {
         self.update_vectors();
     }
 
-    /// Move along `direction` scaled by `speed`, stopping at solid blocks.
+    /// Move along `direction` scaled by `speed`, stopping where `solid`
+    /// reports a solid point.
     ///
     /// The direction is normalised when non-zero so diagonals do not move
-    /// faster. Only the camera's own point is tested, so the camera has no
-    /// body width.
+    /// faster. Each axis moves on its own, so the camera slides along a wall
+    /// instead of sticking to it. Only the camera's own point is tested, so
+    /// the camera has no body width.
     pub fn move_and_collide(
         &mut self,
         direction: Vec3,
         delta_time: f32,
         speed: f32,
-        blocks: &[Block],
+        solid: impl Fn(Vec3) -> bool,
     ) {
-        let dir = if direction.length_squared() > 0.0 {
-            direction.normalize()
-        } else {
+        if direction.length_squared() == 0.0 {
             return;
-        };
-
-        let candidate = self.position + dir * speed * delta_time;
-        if !self.collides(candidate, blocks) {
-            self.position = candidate;
+        }
+        let step = direction.normalize() * speed * delta_time;
+        for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+            let candidate = self.position + step * axis;
+            if !solid(candidate) {
+                self.position = candidate;
+            }
         }
     }
 
-    /// True when `point` sits inside any collidable block.
-    pub fn collides(&self, point: Vec3, blocks: &[Block]) -> bool {
-        blocks
-            .iter()
-            .any(|b| b.has_collision() && b.contains_point(point))
-    }
-
+    /// View matrix with the camera at the origin. The renderer draws the
+    /// world relative to the camera, which keeps vertex positions small and
+    /// precise however far the player travels.
     pub fn view_matrix(&self) -> Mat4 {
-        Mat4::look_at_rh(self.position, self.position + self.front, self.up)
+        Mat4::look_to_rh(Vec3::ZERO, self.front, self.up)
     }
 
     /// Vulkan projection.
@@ -102,7 +98,7 @@ impl Camera {
     /// Vulkan's clip space has Y pointing down, so the projection negates Y.
     /// Without it the scene renders upside down.
     pub fn projection_matrix(&self, aspect: f32) -> Mat4 {
-        let perspective = Mat4::perspective_rh(self.fov_degrees.to_radians(), aspect, 0.1, 500.0);
+        let perspective = Mat4::perspective_rh(self.fov_degrees.to_radians(), aspect, 0.1, 1000.0);
         let flip_y = Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
         flip_y * perspective
     }
@@ -152,7 +148,7 @@ mod tests {
         let mut c = Camera::default();
         let start = c.position;
         let front = c.front;
-        c.move_and_collide(front, 1.0, 15.0, &[]);
+        c.move_and_collide(front, 1.0, 15.0, |_| false);
         assert!((c.position - start).length() > 1.0);
     }
 
@@ -160,12 +156,12 @@ mod tests {
     fn diagonal_movement_is_not_faster() {
         let mut straight = Camera::default();
         let start = straight.position;
-        straight.move_and_collide(Vec3::X, 1.0, 10.0, &[]);
+        straight.move_and_collide(Vec3::X, 1.0, 10.0, |_| false);
         let straight_dist = (straight.position - start).length();
 
         let mut diagonal = Camera::default();
         let start = diagonal.position;
-        diagonal.move_and_collide(Vec3::new(1.0, 0.0, 1.0), 1.0, 10.0, &[]);
+        diagonal.move_and_collide(Vec3::new(1.0, 0.0, 1.0), 1.0, 10.0, |_| false);
         let diagonal_dist = (diagonal.position - start).length();
 
         assert!((straight_dist - diagonal_dist).abs() < 1e-4);
@@ -175,29 +171,27 @@ mod tests {
     fn zero_direction_does_not_move() {
         let mut c = Camera::default();
         let start = c.position;
-        c.move_and_collide(Vec3::ZERO, 1.0, 15.0, &[]);
+        c.move_and_collide(Vec3::ZERO, 1.0, 15.0, |_| false);
         assert_eq!(c.position, start);
     }
 
     #[test]
-    fn movement_stops_at_block() {
+    fn movement_stops_at_a_wall() {
         let mut c = Camera::default();
         let before = c.position;
-        // Destination of a 15-unit step is 15 units along +X.
-        let destination = before + Vec3::X * 15.0;
-        let block = Block::new(destination);
-        c.move_and_collide(Vec3::X, 1.0, 15.0, &[block]);
+        let wall = before.x + 1.0;
+        c.move_and_collide(Vec3::X, 1.0, 15.0, |p| p.x >= wall);
         assert_eq!(c.position, before, "camera moved into a solid block");
     }
 
     #[test]
-    fn inactive_or_non_collidable_blocks_are_ignored() {
+    fn movement_slides_along_a_wall() {
         let mut c = Camera::default();
         let before = c.position;
-        let destination = before + Vec3::X * 15.0;
-        let no_collision = Block::with_flags(destination, true, false);
-        c.move_and_collide(Vec3::X, 1.0, 15.0, &[no_collision]);
-        assert_ne!(c.position, before);
+        let wall = before.x + 1.0;
+        c.move_and_collide(Vec3::new(1.0, 0.0, 1.0), 1.0, 10.0, |p| p.x >= wall);
+        assert_eq!(c.position.x, before.x);
+        assert!(c.position.z > before.z + 5.0);
     }
 
     #[test]
@@ -206,8 +200,9 @@ mod tests {
         let aspect = 4.0 / 3.0;
         let vp = c.projection_matrix(aspect) * c.view_matrix();
 
-        // A point 5 units along camera.right, in front of the camera.
-        let target = c.position + c.front * 10.0;
+        // The view matrix puts the camera at the origin, so points are
+        // given relative to it.
+        let target = c.front * 10.0;
         let p_center = vp.project_point3(target);
         let p_right = vp.project_point3(target + c.right * 5.0);
 
@@ -224,7 +219,7 @@ mod tests {
     fn screen_up_matches_camera_up() {
         let c = Camera::default();
         let vp = c.projection_matrix(4.0 / 3.0) * c.view_matrix();
-        let target = c.position + c.front * 10.0;
+        let target = c.front * 10.0;
         let p_center = vp.project_point3(target);
         let p_up = vp.project_point3(target + c.up * 5.0);
 

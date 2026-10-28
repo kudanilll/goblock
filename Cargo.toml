@@ -21,6 +21,8 @@ ash-window = "0.13"
 bytemuck = { version = "1", features = ["derive"] }
 winit = "0.30"
 raw-window-handle = "0.6"
+fastnoise-lite = "1.1.1"
+png = "0.17.16"
 
 goblock-core = { path = "crates/core" }
 goblock-world = { path = "crates/world" }
@@ -31,6 +33,11 @@ goblock-input = { path = "crates/input" }
 opt-level = 1
 
 [profile.dev.package."*"]
+opt-level = 3
+
+# Terrain generation and meshing run constantly while the player moves, and
+# are too slow to stream chunks at opt-level 1.
+[profile.dev.package.goblock-world]
 opt-level = 3
 
 [profile.release]

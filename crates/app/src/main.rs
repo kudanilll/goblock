@@ -4,13 +4,15 @@
 //! Platform code stays in this crate. An Android build would add its own
 //! module here and reuse the camera, world and render crates unchanged.
 
+mod assets;
 mod game;
 mod input;
 
 use std::sync::Arc;
 
 use goblock_input::InputSource;
-use goblock_render::Renderer;
+use goblock_render::{FrameView, Renderer};
+use goblock_world::WorldEvent;
 use input::DesktopInput;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -18,9 +20,22 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::{Window, WindowId};
 
+/// World seed when none is given on the command line.
+const DEFAULT_SEED: u64 = 1;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // The first argument, if any, is the world seed.
+    let seed = match std::env::args().nth(1) {
+        Some(arg) => arg.parse().map_err(|e| format!("seed {arg:?}: {e}"))?,
+        None => DEFAULT_SEED,
+    };
+
     let event_loop = EventLoop::new()?;
-    let mut app = App::default();
+    let mut app = App {
+        seed,
+        state: None,
+        error: None,
+    };
     event_loop.run_app(&mut app)?;
     if let Some(err) = app.error.take() {
         return Err(err.into());
@@ -28,8 +43,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[derive(Default)]
 struct App {
+    seed: u64,
     state: Option<ActiveState>,
     error: Option<String>,
 }
@@ -48,7 +63,7 @@ impl ApplicationHandler for App {
         if self.state.is_some() {
             return;
         }
-        match ActiveState::new(event_loop) {
+        match ActiveState::new(event_loop, self.seed) {
             Ok(state) => self.state = Some(state),
             Err(e) => {
                 self.error = Some(e);
@@ -95,7 +110,7 @@ impl ApplicationHandler for App {
 }
 
 impl ActiveState {
-    fn new(event_loop: &ActiveEventLoop) -> Result<Self, String> {
+    fn new(event_loop: &ActiveEventLoop, seed: u64) -> Result<Self, String> {
         let window = Arc::new(
             event_loop
                 .create_window(
@@ -129,18 +144,25 @@ impl ActiveState {
         }
         .map_err(|e| e.to_string())?;
 
-        let game = game::Game::new();
+        let loaded = assets::load_block_textures();
+        if !loaded.missing.is_empty() {
+            eprintln!(
+                "goblock: using placeholder colours for {}",
+                loaded.missing.join(", ")
+            );
+        }
 
-        let block_meshes: Vec<Vec<goblock_render::Vertex>> = game
-            .world
-            .chunks()
-            .iter()
-            .map(|chunk| chunk.mesh().vertices.clone())
-            .collect();
+        let renderer = unsafe {
+            Renderer::new(
+                device,
+                size.width.max(1),
+                size.height.max(1),
+                &loaded.textures,
+            )
+        }
+        .map_err(|e| e.to_string())?;
 
-        let renderer =
-            unsafe { Renderer::new(device, size.width.max(1), size.height.max(1), &block_meshes) }
-                .map_err(|e| e.to_string())?;
+        let game = game::Game::new(seed).map_err(|e| format!("start world: {e}"))?;
 
         let input = DesktopInput::new();
         input.set_cursor_grab(&window);
@@ -165,14 +187,21 @@ impl ActiveState {
         }
         self.game.update(delta.as_secs_f32(), &input);
 
-        let view = self.game.camera.view_matrix();
-        let projection = self.game.camera.projection_matrix(self.game.aspect());
-        let view_projection = projection * view;
-        let visible = self.game.world.visible_chunks(&view_projection);
+        for event in self.game.stream() {
+            match event {
+                WorldEvent::Meshed(pos, mesh) => self.renderer.upload_chunk(pos, &mesh)?,
+                WorldEvent::Unloaded(pos) => self.renderer.remove_chunk(pos),
+            }
+        }
 
-        let lines = self.game.hud_lines();
-        self.renderer
-            .draw_frame(&view_projection, &visible, &lines, self.game.elapsed_secs())?;
+        let camera = &self.game.camera;
+        let view = FrameView {
+            camera: camera.position,
+            view_projection: camera.projection_matrix(self.game.aspect()) * camera.view_matrix(),
+            fog_end: self.game.fog_end(),
+        };
+        let lines = self.game.hud_lines(self.renderer.chunk_count());
+        self.renderer.draw_frame(&view, &lines)?;
         Ok(true)
     }
 
