@@ -4,7 +4,7 @@
 #include "common.glsl"
 
 // xyz: position inside the chunk in sixteenths of a block. w: the face, an
-// index into FACE_NORMALS.
+// index into FACE_NORMALS. Tint alpha is the vegetation wind weight.
 layout(location = 0) in uvec4 aPosition;
 // Texture u and v, texture array layer, and ambient occlusion out of 255.
 layout(location = 1) in uvec4 aUvLayerShade;
@@ -24,6 +24,7 @@ layout(location = 5) flat out uint vFace;
 
 void main() {
     vec3 view = pc.chunkOffset.xyz + vec3(aPosition.xyz) / 16.0;
+    view = vegetationPosition(view, aTint.a);
     gl_Position = frame.viewProjection * vec4(view, 1.0);
 
     // Look the shadow up slightly off the surface, so a face does not

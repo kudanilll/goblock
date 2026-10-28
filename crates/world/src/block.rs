@@ -20,10 +20,14 @@ pub enum Texture {
     LogSide,
     LogTop,
     Leaves,
+    GrassTuft,
+    GrassTuftShort,
+    GrassTuftTall,
+    GrassTuftSeeds,
 }
 
 impl Texture {
-    pub const ALL: [Texture; 13] = [
+    pub const ALL: [Texture; 17] = [
         Texture::Stone,
         Texture::Dirt,
         Texture::GrassTop,
@@ -37,6 +41,19 @@ impl Texture {
         Texture::LogSide,
         Texture::LogTop,
         Texture::Leaves,
+        Texture::GrassTuft,
+        Texture::GrassTuftShort,
+        Texture::GrassTuftTall,
+        Texture::GrassTuftSeeds,
+    ];
+
+    /// The sprites a grass tuft can show. The mesher picks one per tuft from
+    /// its position.
+    pub const GRASS_TUFTS: [Texture; 4] = [
+        Texture::GrassTuftShort,
+        Texture::GrassTuft,
+        Texture::GrassTuftTall,
+        Texture::GrassTuftSeeds,
     ];
 
     pub fn name(self) -> &'static str {
@@ -54,6 +71,10 @@ impl Texture {
             Texture::LogSide => "log_side",
             Texture::LogTop => "log_top",
             Texture::Leaves => "leaves",
+            Texture::GrassTuft => "grass_tuft",
+            Texture::GrassTuftShort => "grass_tuft_short",
+            Texture::GrassTuftTall => "grass_tuft_tall",
+            Texture::GrassTuftSeeds => "grass_tuft_seeds",
         }
     }
 
@@ -74,6 +95,10 @@ impl Texture {
             Texture::LogSide => [104, 80, 50, 255],
             Texture::LogTop => [160, 128, 84, 255],
             Texture::Leaves => [60, 120, 48, 230],
+            Texture::GrassTuft
+            | Texture::GrassTuftShort
+            | Texture::GrassTuftTall
+            | Texture::GrassTuftSeeds => [118, 158, 72, 255],
         }
     }
 }
@@ -149,25 +174,29 @@ pub enum BlockId {
     Water,
     Log,
     Leaves,
+    GrassTuft,
 }
 
 impl BlockId {
     /// Whether the camera collides with the block.
     pub fn is_solid(self) -> bool {
-        !matches!(self, BlockId::Air | BlockId::Water)
+        !matches!(self, BlockId::Air | BlockId::Water | BlockId::GrassTuft)
     }
 
     /// Whether the block fills its whole cell, hiding the faces of the blocks
     /// next to it.
     pub fn is_opaque(self) -> bool {
-        !matches!(self, BlockId::Air | BlockId::Water | BlockId::Leaves)
+        !matches!(
+            self,
+            BlockId::Air | BlockId::Water | BlockId::Leaves | BlockId::GrassTuft
+        )
     }
 
     pub fn render_layer(self) -> Option<RenderLayer> {
         match self {
             BlockId::Air => None,
             BlockId::Water => Some(RenderLayer::Translucent),
-            BlockId::Leaves => Some(RenderLayer::Cutout),
+            BlockId::Leaves | BlockId::GrassTuft => Some(RenderLayer::Cutout),
             _ => Some(RenderLayer::Opaque),
         }
     }
@@ -193,13 +222,14 @@ impl BlockId {
             BlockId::Log if end => Texture::LogTop,
             BlockId::Log => Texture::LogSide,
             BlockId::Leaves => Texture::Leaves,
+            BlockId::GrassTuft => Texture::GrassTuft,
         }
     }
 
     pub fn tint(self, face: Face) -> Tint {
         match self {
             BlockId::Grass if face != Face::Down => Tint::Foliage,
-            BlockId::Leaves => Tint::Foliage,
+            BlockId::Leaves | BlockId::GrassTuft => Tint::Foliage,
             BlockId::Water => Tint::Water,
             _ => Tint::None,
         }
@@ -245,6 +275,16 @@ mod tests {
             assert!(!block.is_opaque(), "{block:?}");
         }
         assert!(BlockId::Stone.is_opaque());
+    }
+
+    #[test]
+    fn grass_tufts_are_walk_through_cutouts() {
+        let grass = BlockId::GrassTuft;
+        assert!(!grass.is_solid());
+        assert!(!grass.is_opaque());
+        assert_eq!(grass.render_layer(), Some(RenderLayer::Cutout));
+        assert_eq!(grass.texture(Face::North), Texture::GrassTuft);
+        assert_eq!(grass.tint(Face::North), Tint::Foliage);
     }
 
     #[test]

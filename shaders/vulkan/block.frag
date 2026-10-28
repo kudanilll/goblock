@@ -29,6 +29,9 @@ void main() {
     vec3 viewDir = vView / max(distance, 1e-4);
     vec3 sun = frame.sunDirection.xyz;
     vec3 normal = FACE_NORMALS[vFace];
+    if (ALPHA_MODE == 1 && !gl_FrontFacing) {
+        normal = -normal;
+    }
 
     // Faces turned away from the sun are in their own shadow anyway.
     float lit = dot(normal, sun) > 0.0 ? sunlight(vShadow) : 0.0;

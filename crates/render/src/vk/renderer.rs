@@ -22,15 +22,15 @@ use crate::font;
 
 /// Chunk pipelines push one vec4: the chunk's origin relative to the camera.
 const CHUNK_PUSH_SIZE: u32 = 16;
-/// Size of the `Frame` uniform block in common.glsl: three mat4s and three
+/// Size of the `Frame` uniform block in common.glsl: three mat4s and four
 /// vec4s.
-const FRAME_UNIFORM_SIZE: usize = 3 * 64 + 3 * 16;
+const FRAME_UNIFORM_SIZE: usize = 3 * 64 + 4 * 16;
 /// HUD vertices one frame can hold, six per glyph.
 const HUD_VERTEX_CAPACITY: usize = 4096;
 /// Where fog begins, as a fraction of [`FrameView::fog_end`].
 const FOG_START: f32 = 0.6;
 /// Layers drawn in the scene pass and into the shadow map: opaque blocks,
-/// then leaves. Water, the last layer, is drawn in the final pass.
+/// then cutout vegetation. Water, the last layer, is drawn in the final pass.
 const SOLID_LAYERS: usize = 2;
 
 /// Direction toward the sun: mid-afternoon, about 44° above the horizon.
@@ -42,13 +42,16 @@ fn sun_direction() -> Vec3 {
 pub struct FrameView {
     /// Camera position in world space.
     pub camera: Vec3,
+    /// Player's feet in world space and body height, for bending grass.
+    pub player_feet: Vec3,
+    pub player_height: f32,
     /// Projection times view, with the camera at the origin.
     pub view_projection: Mat4,
     /// Distance at which fog hides the world completely. Keep it inside the
     /// loaded range so the edge of the world never shows. Sun shadows reach
     /// this far as well.
     pub fog_end: f32,
-    /// Seconds since the game started, for moving water.
+    /// Seconds since the game started, for water and vegetation.
     pub time: f32,
     /// Whether the camera is in water, which swaps the sky and the fog for
     /// murky water.
@@ -222,6 +225,7 @@ impl Renderer {
                 vertex_attributes: vec![
                     chunk_attribute(0, vk::Format::R16G16B16A16_UINT, 0),
                     chunk_attribute(1, vk::Format::R8G8B8A8_UINT, 8),
+                    chunk_attribute(2, vk::Format::R8G8B8A8_UNORM, 12),
                 ],
                 push_constant_size: CHUNK_PUSH_SIZE,
                 depth_test: true,
@@ -878,7 +882,8 @@ impl Drop for Renderer {
 /// The `Frame` uniform block from common.glsl, laid out by std140 rules:
 /// view-projection, its inverse and the shadow matrix, then the camera
 /// position with the time, the sun direction with the shadow texel size,
-/// and the fog distances with the underwater and reflection flags.
+/// the fog distances with the underwater and reflection flags, and the
+/// camera-relative player's feet with the body height.
 fn frame_uniforms(
     view: &FrameView,
     shadow_matrix: &Mat4,
@@ -887,6 +892,7 @@ fn frame_uniforms(
 ) -> Vec<u8> {
     let sun = sun_direction();
     let camera = view.camera;
+    let feet = view.player_feet - camera;
     let flag = |on: bool| if on { 1.0 } else { 0.0 };
     let floats: Vec<f32> = [
         view.view_projection.to_cols_array().as_slice(),
@@ -900,6 +906,7 @@ fn frame_uniforms(
             flag(view.underwater),
             flag(reflections),
         ],
+        &[feet.x, feet.y, feet.z, view.player_height],
     ]
     .concat();
     bytemuck::cast_slice(&floats).to_vec()
@@ -1010,6 +1017,8 @@ mod tests {
     fn frame_uniforms_follow_the_std140_layout() {
         let view = FrameView {
             camera: Vec3::new(1.0, 2.0, 3.0),
+            player_feet: Vec3::new(1.0, 0.5, 3.0),
+            player_height: 1.8,
             view_projection: Mat4::IDENTITY,
             fog_end: 100.0,
             time: 7.0,
@@ -1029,5 +1038,10 @@ mod tests {
         assert_eq!(float(228), 100.0, "fog end");
         assert_eq!(float(232), 1.0, "underwater flag in fog.z");
         assert_eq!(float(236), 1.0, "reflection flag in fog.w");
+        assert_eq!(bytes.len(), 256);
+        assert_eq!(
+            [float(240), float(244), float(248), float(252)],
+            [0.0, -1.5, 0.0, 1.8]
+        );
     }
 }

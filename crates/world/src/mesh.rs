@@ -4,20 +4,21 @@
 use glam::IVec3;
 
 use crate::biome::Biome;
-use crate::block::{BlockId, Face, Tint};
+use crate::block::{BlockId, Face, Texture, Tint};
 use crate::chunk::{Chunk, CHUNK_SIZE};
+use crate::terrain::hash;
 
 /// One corner of a block face, in the layout the GPU reads.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ChunkVertex {
     /// Position inside the chunk in sixteenths of a block. `w` is the face,
-    /// an index into [`Face::ALL`], from which the shaders get the normal.
+    /// an index into [`Face::ALL`], or 6 and 7 for crossed grass planes.
     pub position: [u16; 4],
     /// Texture u and v (0 or 1), texture array layer, and ambient occlusion
     /// (255 for fully open).
     pub uv_layer_shade: [u8; 4],
-    /// Biome tint in sRGB. Alpha is unused.
+    /// Biome tint in sRGB. Alpha is wind weight: 0 fixed, 64 leaves, 255 grass tips.
     pub tint: [u8; 4],
 }
 
@@ -100,6 +101,12 @@ pub fn build_mesh(chunks: [&Chunk; 9]) -> ChunkMesh {
                     let Some(layer) = block.render_layer() else {
                         continue;
                     };
+                    if block == BlockId::GrassTuft {
+                        emit_grass(centre, IVec3::new(x, y, z), &mut layers[layer as usize]);
+                        min_y = min_y.min(y);
+                        max_y = max_y.max(y + 1);
+                        continue;
+                    }
                     let water_surface =
                         block == BlockId::Water && area.get(x, y + 1, z) != BlockId::Water;
 
@@ -138,6 +145,39 @@ pub fn build_mesh(chunks: [&Chunk; 9]) -> ChunkMesh {
     mesh.vertices.extend(cutout);
     mesh.vertices.extend(translucent);
     mesh
+}
+
+fn emit_grass(chunk: &Chunk, pos: IVec3, out: &mut Vec<ChunkVertex>) {
+    let origin = chunk.origin();
+    let roll = hash(0, origin.x + pos.x, origin.z + pos.z);
+    let jitter_x = (roll % 5) as i32 - 2;
+    let jitter_z = ((roll >> 4) % 5) as i32 - 2;
+    let sprite = Texture::GRASS_TUFTS[(roll >> 8) as usize % Texture::GRASS_TUFTS.len()];
+    let [r, g, b] = chunk.biome(pos.x, pos.z).foliage_tint();
+    for (plane, [[ax, az], [bx, bz]]) in [[[2, 2], [14, 14]], [[14, 2], [2, 14]]]
+        .into_iter()
+        .enumerate()
+    {
+        // Each plane shows the sprite mirrored half the time.
+        let mirror = ((roll >> (12 + plane)) & 1) as u8;
+        // Every quad is a full block tall, so a sprite texel is as big as a
+        // block texel. Short sprites are short in the image instead.
+        for (i, [x, y, z]) in [[ax, 0, az], [bx, 0, bz], [bx, 16, bz], [ax, 16, az]]
+            .into_iter()
+            .enumerate()
+        {
+            out.push(ChunkVertex {
+                position: [
+                    (pos.x * 16 + x + jitter_x) as u16,
+                    (pos.y * 16 + y) as u16,
+                    (pos.z * 16 + z + jitter_z) as u16,
+                    6 + plane as u16,
+                ],
+                uv_layer_shade: [UVS[i][0] ^ mirror, UVS[i][1], sprite as u8, 255],
+                tint: [r, g, b, if y == 0 { 0 } else { 255 }],
+            });
+        }
+    }
 }
 
 struct Quad {
@@ -189,7 +229,7 @@ impl Quad {
                     face,
                 ],
                 uv_layer_shade: [UVS[i][0], UVS[i][1], layer, AO_LEVELS[ao[i]]],
-                tint: [r, g, b, 255],
+                tint: [r, g, b, if self.block == BlockId::Leaves { 64 } else { 0 }],
             });
         }
     }
@@ -356,7 +396,6 @@ mod tests {
         chunk.set(9, 70, 9, BlockId::Stone);
         let mesh = mesh_alone(&chunk);
         let layer_of = |quad: u32| mesh.vertices[quad as usize * 4].uv_layer_shade[2];
-        use crate::block::Texture;
         assert_eq!(layer_of(0), Texture::Stone as u8);
         assert_eq!(layer_of(mesh.opaque_quads), Texture::Leaves as u8);
         // Water has no texture, so it is told apart by its tint.
@@ -375,6 +414,84 @@ mod tests {
         let mesh = mesh_alone(&chunk);
         let tint = Biome::Savanna.foliage_tint();
         assert!(mesh.vertices.iter().any(|v| v.tint[..3] == tint));
+    }
+
+    #[test]
+    fn wind_weights_only_mark_tree_leaves() {
+        for block in [
+            BlockId::Stone,
+            BlockId::Grass,
+            BlockId::Log,
+            BlockId::Leaves,
+            BlockId::Water,
+        ] {
+            let mut chunk = Chunk::new(IVec2::ZERO);
+            chunk.set(5, 70, 5, block);
+            let mesh = mesh_alone(&chunk);
+            for vertex in mesh.vertices {
+                if block == BlockId::Leaves {
+                    assert!((1..128).contains(&vertex.tint[3]));
+                } else {
+                    assert_eq!(vertex.tint[3], 0, "{block:?} must stay still");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn grass_tufts_have_two_crossed_quads_with_fixed_roots() {
+        let mut chunk = Chunk::new(IVec2::new(-1, 0));
+        chunk.set(15, 70, 0, BlockId::GrassTuft);
+        let mesh = mesh_alone(&chunk);
+        assert_eq!(
+            (mesh.opaque_quads, mesh.cutout_quads, mesh.translucent_quads),
+            (0, 2, 0)
+        );
+        assert_eq!(mesh.vertices.len(), 8);
+        assert_eq!(mesh.vertices.iter().filter(|v| v.tint[3] == 0).count(), 4);
+        assert_eq!(mesh.vertices.iter().filter(|v| v.tint[3] == 255).count(), 4);
+        for vertex in mesh.vertices {
+            assert!(vertex.position[0] <= 256 && vertex.position[2] <= 256);
+            assert_eq!(vertex.tint[..3], Biome::Plains.foliage_tint());
+            if vertex.tint[3] == 0 {
+                assert_eq!(vertex.position[1], 70 * 16);
+            } else {
+                assert_eq!(vertex.position[1], 71 * 16);
+            }
+        }
+    }
+
+    #[test]
+    fn grass_tufts_vary_their_sprite_and_mirror_it() {
+        let mut chunk = Chunk::new(IVec2::ZERO);
+        for x in 0..CHUNK_SIZE {
+            chunk.set(x, 70, 0, BlockId::GrassTuft);
+        }
+        let mesh = mesh_alone(&chunk);
+        let mut layers: Vec<u8> = mesh.vertices.iter().map(|v| v.uv_layer_shade[2]).collect();
+        layers.sort_unstable();
+        layers.dedup();
+        assert!(layers.len() > 1, "a row of tufts all used one sprite");
+        assert!(layers
+            .iter()
+            .all(|&layer| Texture::GRASS_TUFTS.iter().any(|&t| t as u8 == layer)));
+        // The first corner of a quad has u 0, or 1 when the quad is mirrored.
+        let first_u: Vec<u8> = mesh
+            .vertices
+            .chunks(4)
+            .map(|quad| quad[0].uv_layer_shade[0])
+            .collect();
+        assert!(first_u.contains(&0) && first_u.contains(&1));
+    }
+
+    #[test]
+    fn grass_tufts_do_not_hide_the_ground_below_them() {
+        let mut chunk = Chunk::new(IVec2::ZERO);
+        chunk.set(5, 70, 5, BlockId::Grass);
+        chunk.set(5, 71, 5, BlockId::GrassTuft);
+        let mesh = mesh_alone(&chunk);
+        assert_eq!(mesh.opaque_quads, 6);
+        assert_eq!(mesh.cutout_quads, 2);
     }
 
     #[test]

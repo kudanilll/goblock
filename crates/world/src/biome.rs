@@ -69,6 +69,8 @@ pub(crate) enum TreeKind {
     Broadleaf,
     Tall,
     Conifer,
+    Slender,
+    Spreading,
 }
 
 /// Ground layers: `top` on the surface, then `depth` blocks of `filler`,
@@ -329,13 +331,28 @@ impl Biome {
         }
     }
 
-    pub(crate) fn tree_kind(self) -> TreeKind {
+    pub(crate) fn tree_kind(self, roll: u64) -> TreeKind {
         match self {
             Biome::Jungle => TreeKind::Tall,
+            Biome::Savanna | Biome::Swamp => TreeKind::Spreading,
             Biome::SparseTaiga | Biome::Taiga | Biome::SnowyTaiga | Biome::SnowySparseTaiga => {
                 TreeKind::Conifer
             }
+            Biome::Forest | Biome::Woodland if roll & 1 != 0 => TreeKind::Slender,
             _ => TreeKind::Broadleaf,
+        }
+    }
+
+    /// Chance of a grass tuft on an open grassy column.
+    pub(crate) fn grass_density(self) -> f32 {
+        match self {
+            Biome::Plains => 0.45,
+            Biome::Savanna | Biome::Jungle => 0.5,
+            Biome::Woodland | Biome::Swamp => 0.3,
+            Biome::Forest | Biome::Shrubland => 0.2,
+            Biome::Highlands | Biome::SparseTaiga => 0.12,
+            Biome::Taiga => 0.08,
+            _ => 0.0,
         }
     }
 
@@ -421,6 +438,15 @@ mod tests {
     #[test]
     fn high_snowy_treeless_ground_is_alpine_snow() {
         assert_eq!(classify(&input(3200.0, -6.0, 300.0)), Biome::AlpineSnow);
+    }
+
+    #[test]
+    fn forest_trees_vary_but_savanna_and_taiga_keep_their_profiles() {
+        assert_ne!(Biome::Forest.tree_kind(0), Biome::Forest.tree_kind(1));
+        for roll in 0..8 {
+            assert_eq!(Biome::Savanna.tree_kind(roll), TreeKind::Spreading);
+            assert_eq!(Biome::Taiga.tree_kind(roll), TreeKind::Conifer);
+        }
     }
 
     #[test]

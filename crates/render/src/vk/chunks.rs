@@ -21,6 +21,8 @@ pub const LAYERS: usize = 3;
 
 /// Byte size of one chunk vertex, which is the vertex binding stride.
 pub const VERTEX_STRIDE: u32 = std::mem::size_of::<ChunkVertex>() as u32;
+/// Includes wind and player bending beyond the static mesh bounds.
+const FOLIAGE_MARGIN: f32 = 0.75;
 
 struct GpuChunk {
     vertices: GpuBuffer,
@@ -197,8 +199,13 @@ impl ChunkBuffers {
             .iter()
             .filter_map(|(&pos, chunk)| {
                 let offset = Vec3::new(pos.x as f32 * size, 0.0, pos.y as f32 * size) - camera;
-                let min = offset + Vec3::Y * chunk.min_y as f32;
-                let max = offset + Vec3::new(size, chunk.max_y as f32, size);
+                let min = offset + Vec3::new(-FOLIAGE_MARGIN, chunk.min_y as f32, -FOLIAGE_MARGIN);
+                let max = offset
+                    + Vec3::new(
+                        size + FOLIAGE_MARGIN,
+                        chunk.max_y as f32,
+                        size + FOLIAGE_MARGIN,
+                    );
                 frustum.intersects_box(min, max).then(|| VisibleChunk {
                     pos,
                     offset,

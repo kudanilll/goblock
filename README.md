@@ -2,7 +2,9 @@
 
 A block themed casual game written in Rust, rendered with Vulkan through `ash`.
 
-The world is endless. Terrain is generated in real-world units (each block is 15 m) from fractal noise for continents, mountain ridges and hills, and climate noise for temperature and rainfall picks one of 21 biomes per column, with trees where the climate allows them. Chunks stream in around the camera on worker threads and are dropped again behind it. The camera flies with WASD and mouse look, and the debug HUD shows position, FPS, the current biome and how many chunks are on the GPU.
+The world is endless. Terrain is generated in real-world units (each block is 15 m) from fractal noise for continents, mountain ridges and hills, and climate noise for temperature and rainfall picks one of 21 biomes per column, with trees and grass where the climate allows them. Chunks stream in around the player on worker threads and are dropped again behind it. The player walks with WASD and mouse look, and the debug HUD shows position, FPS, the current biome and how many chunks are on the GPU.
+
+Trees have rounded, tall, conifer, slender and spreading crowns, selected by biome and seed. Leaves and grass sway in the wind. Grass has fixed roots, bends away as the player walks through it, and straightens as the player moves away. Each tuft is one of four pixel-art sprites (short, medium, tall, or with seed heads), picked and mirrored at random. Its colour and density vary across the world, and it does not block movement. Shadows follow the animated vegetation.
 
 ## Requirements
 
@@ -56,7 +58,7 @@ The player is a 0.6 × 1.8 block body that walks under gravity and collides with
 
 ## Textures
 
-Block textures are PNG files in `assets/textures/blocks/`, one per name in `goblock_world::Texture` (`stone.png`, `grass_top.png`, `leaves.png` and so on). Any square size works; each one is scaled to 64×64 when the game starts. A missing file gets a placeholder colour and a note on stderr. `assets/textures/PROMPTS.md` has a prompt for every texture.
+Block textures are PNG files in `assets/textures/blocks/`, one per name in `goblock_world::Texture` (`stone.png`, `grass_top.png`, `leaves.png` and so on). Any square size works; each one is scaled to 64×64 when the game starts. A missing file gets a placeholder colour and a note on stderr. The four grass tuft sprites are built in as 32×32 pixel art, and optional `grass_tuft.png`, `grass_tuft_short.png`, `grass_tuft_tall.png` and `grass_tuft_seeds.png` files replace them. A small PNG keeps hard pixel edges when it is scaled up, so a 32×32 or 64×64 drawing works best for these. `assets/textures/PROMPTS.md` has a prompt for every texture.
 
 ## Shaders
 

@@ -207,6 +207,8 @@ impl ActiveState {
         let camera = &self.game.camera;
         let view = FrameView {
             camera: camera.position,
+            player_feet: self.game.player.feet.as_vec3(),
+            player_height: goblock_input::player::HEIGHT as f32,
             view_projection: camera.projection_matrix(self.game.aspect()) * camera.view_matrix(),
             fog_end: self.game.fog_end(),
             time: self.game.elapsed(),

@@ -18,6 +18,8 @@ layout(set = 0, binding = 0) uniform Frame {
     // z: 1 when the camera is under water. w: 1 when water traces
     // screen-space reflections.
     vec4 fog;
+    // xyz: player's feet relative to the camera. w: body height.
+    vec4 playerFeet;
 } frame;
 
 layout(set = 0, binding = 2) uniform sampler2DShadow uShadow;
@@ -33,15 +35,46 @@ const vec3 SKY_AMBIENT = vec3(0.32, 0.42, 0.58);
 // Light bounced off the ground, reaching surfaces that face down.
 const vec3 GROUND_BOUNCE = vec3(0.16, 0.14, 0.11);
 
-// Face normals in the order of goblock_world::Face::ALL.
-const vec3 FACE_NORMALS[6] = vec3[](
+// Block faces follow goblock_world::Face::ALL, then the two grass diagonals.
+const vec3 FACE_NORMALS[8] = vec3[](
     vec3(0.0, 1.0, 0.0),
     vec3(0.0, -1.0, 0.0),
     vec3(0.0, 0.0, -1.0),
     vec3(0.0, 0.0, 1.0),
     vec3(-1.0, 0.0, 0.0),
-    vec3(1.0, 0.0, 0.0)
+    vec3(1.0, 0.0, 0.0),
+    vec3(-0.70710678, 0.0, 0.70710678),
+    vec3(-0.70710678, 0.0, -0.70710678)
 );
+
+// Shared by the scene and shadow passes so moving foliage keeps its shadow.
+vec3 vegetationPosition(vec3 view, float weight) {
+    if (weight == 0.0) {
+        return view;
+    }
+    vec3 world = frame.cameraPosition.xyz + view;
+    float time = frame.cameraPosition.w;
+    float breeze = sin(dot(world.xz, vec2(0.23, 0.17)) + time * 1.7) * 0.18
+                 + sin(dot(world.xz, vec2(-0.41, 0.29)) + time * 2.9) * 0.06;
+    vec2 wind = vec2(0.91, 0.41) * breeze * weight;
+
+    // Leaf weights stay below 0.5; only grass tips react to the body.
+    if (weight > 0.5) {
+        vec2 away = view.xz - frame.playerFeet.xz;
+        float distance = length(away);
+        float aboveFeet = view.y - frame.playerFeet.y;
+        // Tips can reach the next cell boundary, but roots stay in the cell below.
+        float rootAboveFeet = floor(world.y - 1.0 / 32.0)
+                            - frame.cameraPosition.y - frame.playerFeet.y;
+        float vertical = smoothstep(-0.1, 0.15, aboveFeet)
+                       * (1.0 - smoothstep(frame.playerFeet.w, frame.playerFeet.w + 0.25, rootAboveFeet));
+        float bend = (1.0 - smoothstep(0.2, 1.15, distance)) * vertical;
+        view.xz += away / max(distance, 0.05) * bend * 0.48;
+        view.y -= bend * 0.22;
+    }
+    view.xz += wind;
+    return view;
+}
 
 // Colour of the sky in direction `dir`.
 vec3 skyColor(vec3 dir) {

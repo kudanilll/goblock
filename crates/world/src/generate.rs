@@ -9,7 +9,7 @@ use crate::chunk::{Chunk, CHUNK_SIZE};
 use crate::terrain::{hash, ColumnSample, Terrain, SEA_LEVEL};
 
 /// How far a tree's leaves reach from its trunk.
-const TREE_REACH: i32 = 3;
+const TREE_REACH: i32 = 4;
 /// Trees grow at most one per cell of this size, which keeps trunks apart.
 const TREE_CELL: i32 = 5;
 
@@ -80,6 +80,7 @@ pub(crate) fn generate_chunk(terrain: &Terrain, pos: IVec2) -> Chunk {
     }
 
     plant_trees(&mut chunk, &columns, terrain.seed());
+    plant_grass(&mut chunk, &columns, terrain.seed());
     chunk
 }
 
@@ -141,7 +142,29 @@ fn plant_trees(chunk: &mut Chunk, columns: &Columns, seed: u64) {
             }
 
             let base = (tx - origin.x, sample.height + 1, tz - origin.z);
-            grow_tree(chunk, base, sample.biome.tree_kind(), roll >> 32);
+            grow_tree(chunk, base, sample.biome.tree_kind(roll >> 32), roll >> 32);
+        }
+    }
+}
+
+fn plant_grass(chunk: &mut Chunk, columns: &Columns, seed: u64) {
+    let origin = chunk.origin();
+    for z in 0..CHUNK_SIZE {
+        for x in 0..CHUNK_SIZE {
+            let wx = origin.x + x;
+            let wz = origin.z + z;
+            let Some(sample) = columns.get(wx, wz) else {
+                continue;
+            };
+            let y = sample.height + 1;
+            let roll = hash(seed ^ 0x6a09_e667_f3bc_c909, wx, wz);
+            let chance = (roll & 0xffff) as f32 / 65536.0;
+            if chance < sample.biome.grass_density()
+                && chunk.get(x, y - 1, z) == BlockId::Grass
+                && chunk.get(x, y, z) == BlockId::Air
+            {
+                chunk.set(x, y, z, BlockId::GrassTuft);
+            }
         }
     }
 }
@@ -152,19 +175,38 @@ fn plant_trees(chunk: &mut Chunk, columns: &Columns, seed: u64) {
 fn grow_tree(chunk: &mut Chunk, base: (i32, i32, i32), kind: TreeKind, roll: u64) {
     let (bx, by, bz) = base;
     let (trunk, crown_depth) = match kind {
-        TreeKind::Broadleaf => (4 + (roll % 3) as i32, 3),
+        TreeKind::Broadleaf => (4 + (roll % 3) as i32, 3 + ((roll >> 6) & 1) as i32),
         TreeKind::Tall => (8 + (roll % 5) as i32, 4),
         // Conifer foliage runs most of the way down the trunk.
         TreeKind::Conifer => (6 + (roll % 4) as i32, 4 + (roll % 4) as i32),
+        TreeKind::Slender => (7 + (roll % 4) as i32, 5),
+        TreeKind::Spreading => (5 + (roll % 3) as i32, 2),
     };
     let top = by + trunk - 1;
+    let (lean_x, lean_z) = if kind == TreeKind::Spreading {
+        match (roll >> 4) & 3 {
+            0 => (1, 0),
+            1 => (-1, 0),
+            2 => (0, 1),
+            _ => (0, -1),
+        }
+    } else {
+        (0, 0)
+    };
 
     for y in (top - crown_depth + 1).max(by + 1)..=top + 1 {
         let radius = leaf_radius(kind, top + 1 - y);
         for dz in -radius..=radius {
             for dx in -radius..=radius {
                 if dx * dx + dz * dz <= radius * radius + radius {
-                    set_in_chunk(chunk, bx + dx, y, bz + dz, BlockId::Leaves, true);
+                    set_in_chunk(
+                        chunk,
+                        bx + lean_x + dx,
+                        y,
+                        bz + lean_z + dz,
+                        BlockId::Leaves,
+                        true,
+                    );
                 }
             }
         }
@@ -173,6 +215,9 @@ fn grow_tree(chunk: &mut Chunk, base: (i32, i32, i32), kind: TreeKind, roll: u64
     for y in by..=top {
         set_in_chunk(chunk, bx, y, bz, BlockId::Log, false);
     }
+    if kind == TreeKind::Spreading {
+        set_in_chunk(chunk, bx + lean_x, top, bz + lean_z, BlockId::Log, false);
+    }
 }
 
 /// Leaf radius `depth` layers below the top of the crown.
@@ -180,6 +225,11 @@ fn leaf_radius(kind: TreeKind, depth: i32) -> i32 {
     match (kind, depth) {
         (TreeKind::Conifer, 0) => 0,
         (TreeKind::Conifer, d) => 1 + (d + 1) % 2,
+        (TreeKind::Spreading, 0) => 2,
+        (TreeKind::Spreading, _) => 3,
+        (TreeKind::Slender, 0) => 0,
+        (TreeKind::Slender, 1 | 2) => 1,
+        (TreeKind::Slender, _) => 2,
         (_, 0 | 1) => 1,
         (TreeKind::Tall, _) => 3,
         (TreeKind::Broadleaf, _) => 2,
@@ -265,6 +315,101 @@ mod tests {
         grow_tree(&mut chunk, (-1, 70, 0), TreeKind::Tall, 0);
         assert!((70..90).any(|y| chunk.get(0, y, 0) == BlockId::Leaves));
         assert!((70..90).all(|y| chunk.get(0, y, 0) != BlockId::Log));
+    }
+
+    #[test]
+    fn spreading_trees_have_wide_canopies_and_a_branch() {
+        let mut chunk = Chunk::new(IVec2::ZERO);
+        grow_tree(&mut chunk, (8, 70, 8), TreeKind::Spreading, 0);
+        assert_eq!(chunk.get(8, 70, 8), BlockId::Log);
+        assert_eq!(chunk.get(9, 74, 8), BlockId::Log);
+        assert_eq!(chunk.get(12, 74, 8), BlockId::Leaves);
+        assert_eq!(chunk.get(12, 70, 8), BlockId::Air);
+    }
+
+    #[test]
+    fn tree_canopies_reconstruct_across_negative_chunk_borders() {
+        for kind in [
+            TreeKind::Broadleaf,
+            TreeKind::Tall,
+            TreeKind::Conifer,
+            TreeKind::Slender,
+            TreeKind::Spreading,
+        ] {
+            for roll in [0, 1, 16, 32, 48, 63] {
+                let mut whole = Chunk::new(IVec2::ZERO);
+                let mut west = Chunk::new(IVec2::new(-1, 0));
+                let mut east = Chunk::new(IVec2::ZERO);
+                grow_tree(&mut whole, (8, 70, 8), kind, roll);
+                grow_tree(&mut west, (15, 70, 8), kind, roll);
+                grow_tree(&mut east, (-1, 70, 8), kind, roll);
+                for y in 70..88 {
+                    for dz in -4..=4 {
+                        for dx in -4..=4 {
+                            let actual = if dx <= 0 {
+                                west.get(15 + dx, y, 8 + dz)
+                            } else {
+                                east.get(dx - 1, y, 8 + dz)
+                            };
+                            assert_eq!(
+                                actual,
+                                whole.get(8 + dx, y, 8 + dz),
+                                "{kind:?}, roll {roll}, offset ({dx}, {y}, {dz})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn grass_grows_deterministically_only_on_open_grassy_ground() {
+        let columns = Columns {
+            min_x: 0,
+            min_z: 0,
+            span: CHUNK_SIZE,
+            samples: vec![
+                ColumnSample {
+                    elevation: 90.0,
+                    height: 70,
+                    biome: Biome::Plains
+                };
+                256
+            ],
+        };
+        let mut a = Chunk::new(IVec2::ZERO);
+        for z in 0..CHUNK_SIZE {
+            for x in 0..CHUNK_SIZE {
+                let ground = match x {
+                    0 => BlockId::Sand,
+                    1 => BlockId::SnowyGrass,
+                    2 => BlockId::Water,
+                    _ => BlockId::Grass,
+                };
+                a.set(x, 70, z, ground);
+                if z == 0 {
+                    a.set(x, 71, z, BlockId::Log);
+                }
+            }
+        }
+        let mut b = a.clone();
+        plant_grass(&mut a, &columns, 5);
+        plant_grass(&mut b, &columns, 5);
+        let mut tufts = 0;
+        for z in 0..CHUNK_SIZE {
+            for x in 0..CHUNK_SIZE {
+                assert_eq!(a.get(x, 71, z), b.get(x, 71, z));
+                if x < 3 || z == 0 {
+                    assert_ne!(a.get(x, 71, z), BlockId::GrassTuft);
+                }
+                tufts += usize::from(a.get(x, 71, z) == BlockId::GrassTuft);
+            }
+        }
+        assert!(
+            (20..180).contains(&tufts),
+            "expected scattered grass, got {tufts}"
+        );
     }
 
     #[test]
