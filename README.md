@@ -32,10 +32,11 @@ cargo run --release
 
 The first build compiles the Vulkan stack and every shader to SPIR-V, so it takes a few minutes.
 
-The world seed defaults to 1. Pass another number to get a different world:
+Every launch starts a new world from a random seed. The seed is shown in the HUD and printed when the game starts. Pass a seed to play a world again; numbers (negative ones too) are used as they are, and any other text always maps to the same world:
 
 ```sh
 cargo run --release -- 42
+cargo run --release -- "my world"
 ```
 
 ### Controls
@@ -47,6 +48,7 @@ cargo run --release -- 42
 | `Shift`         | Sprint      |
 | `Space`         | Fly up      |
 | `Ctrl` or `C`   | Fly down    |
+| `F11`           | Fullscreen  |
 | `Esc`           | Quit        |
 
 ## Textures

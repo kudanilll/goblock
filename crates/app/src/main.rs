@@ -15,20 +15,17 @@ use goblock_render::{FrameView, Renderer};
 use goblock_world::WorldEvent;
 use input::DesktopInput;
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use winit::window::{Window, WindowId};
-
-/// World seed when none is given on the command line.
-const DEFAULT_SEED: u64 = 1;
+use winit::window::{Fullscreen, Window, WindowId};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // The first argument, if any, is the world seed.
-    let seed = match std::env::args().nth(1) {
-        Some(arg) => arg.parse().map_err(|e| format!("seed {arg:?}: {e}"))?,
-        None => DEFAULT_SEED,
-    };
+    let seed = world_seed(std::env::args().nth(1).as_deref());
+    // Printed as signed, which is also how the HUD shows it, so it can be
+    // passed straight back on the command line.
+    println!("goblock: world seed {}", seed as i64);
 
     let event_loop = EventLoop::new()?;
     let mut app = App {
@@ -93,6 +90,19 @@ impl ApplicationHandler for App {
                 Ok(false) => event_loop.exit(),
                 Err(e) => state.fail(event_loop, e),
             },
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == ElementState::Pressed
+                    && !key.repeat
+                    && key.physical_key == PhysicalKey::Code(KeyCode::F11) =>
+            {
+                // Borderless rather than exclusive fullscreen: it switches
+                // instantly and works on every platform winit supports.
+                let fullscreen = match state.window.fullscreen() {
+                    Some(_) => None,
+                    None => Some(Fullscreen::Borderless(None)),
+                };
+                state.window.set_fullscreen(fullscreen);
+            }
             _ => {}
         }
     }
@@ -210,5 +220,73 @@ impl ActiveState {
     fn fail(&mut self, event_loop: &ActiveEventLoop, e: impl std::fmt::Display) {
         eprintln!("goblock: {e}");
         event_loop.exit();
+    }
+}
+
+/// Seed for the world: from `arg` when one is given, otherwise a fresh
+/// random one, so every launch starts in a new world.
+fn world_seed(arg: Option<&str>) -> u64 {
+    match arg {
+        Some(text) => parse_seed(text),
+        None => random_seed(),
+    }
+}
+
+/// Numbers are used as they are, negative ones included. Any other text is
+/// hashed with FNV-1a, which never changes between builds or platforms, so
+/// the same word always gives the same world.
+fn parse_seed(text: &str) -> u64 {
+    let text = text.trim();
+    if let Ok(number) = text.parse::<i64>() {
+        return number as u64;
+    }
+    if let Ok(number) = text.parse::<u64>() {
+        return number;
+    }
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ byte as u64).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// A random seed. The standard library keys `RandomState` from the
+/// operating system's random source, so it differs on every launch.
+fn random_seed() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numbers_are_used_as_they_are() {
+        assert_eq!(parse_seed("42"), 42);
+        assert_eq!(parse_seed(" 42 "), 42);
+        assert_eq!(parse_seed("-1") as i64, -1);
+        assert_eq!(parse_seed(&u64::MAX.to_string()), u64::MAX);
+    }
+
+    #[test]
+    fn printed_seeds_parse_back_to_the_same_world() {
+        for seed in [0u64, 7, u64::MAX, 1 << 63] {
+            assert_eq!(parse_seed(&(seed as i64).to_string()), seed);
+        }
+    }
+
+    #[test]
+    fn text_seeds_are_stable_and_distinct() {
+        assert_eq!(parse_seed("goblock"), parse_seed("goblock"));
+        assert_ne!(parse_seed("goblock"), parse_seed("GoBlock"));
+        // FNV-1a of "a", fixed for good.
+        assert_eq!(parse_seed("a"), 0xaf63_dc4c_8601_ec8c);
+    }
+
+    #[test]
+    fn launches_without_a_seed_get_different_worlds() {
+        assert_ne!(world_seed(None), world_seed(None));
+        assert_eq!(world_seed(Some("5")), 5);
     }
 }

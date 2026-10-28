@@ -8,7 +8,7 @@ use goblock_input::{Camera, InputState};
 use goblock_world::{BlockId, World, WorldEvent, CHUNK_SIZE};
 
 /// Chunks kept meshed around the player.
-pub const VIEW_DISTANCE: i32 = 12;
+pub const VIEW_DISTANCE: i32 = 16;
 
 pub struct Game {
     pub camera: Camera,
@@ -130,6 +130,8 @@ impl Game {
             format!("FPS {:.0}", self.fps),
             format!("BIOME {}", biome.name().to_uppercase()),
             format!("CHUNKS {gpu_chunks}"),
+            // Signed, so it can be typed back on the command line as is.
+            format!("SEED {}", self.world.terrain().seed() as i64),
         ]
     }
 }
@@ -150,14 +152,15 @@ mod tests {
     }
 
     #[test]
-    fn hud_reports_position_fps_biome_and_chunks() {
-        let game = Game::new(3).unwrap();
+    fn hud_reports_position_fps_biome_chunks_and_seed() {
+        let game = Game::new(u64::MAX).unwrap();
         let lines = game.hud_lines(7);
-        assert_eq!(lines.len(), 4);
+        assert_eq!(lines.len(), 5);
         assert!(lines[0].starts_with("POS "));
         assert!(lines[1].starts_with("FPS "));
         assert!(lines[2].starts_with("BIOME "));
         assert_eq!(lines[3], "CHUNKS 7");
+        assert_eq!(lines[4], "SEED -1");
     }
 
     #[test]
