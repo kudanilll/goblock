@@ -1,0 +1,24 @@
+[package]
+name = "goblock-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "goblock"
+path = "src/main.rs"
+
+[dependencies]
+goblock-core.workspace = true
+goblock-input.workspace = true
+goblock-render.workspace = true
+goblock-world.workspace = true
+
+ash.workspace = true
+bytemuck.workspace = true
+glam.workspace = true
+raw-window-handle.workspace = true
+winit.workspace = true
+
+[dev-dependencies]
+winit.workspace = true

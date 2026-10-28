@@ -1,0 +1,10 @@
+[package]
+name = "goblock-input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+goblock-core.workspace = true
+goblock-world.workspace = true
+glam.workspace = true
