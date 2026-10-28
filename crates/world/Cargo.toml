@@ -1,0 +1,9 @@
+[package]
+name = "goblock-world"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+goblock-core.workspace = true
+glam.workspace = true

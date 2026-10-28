@@ -1,55 +1,86 @@
 # GoBlock
 
-A block themed casual game built with C++17, OpenGL, GLFW and GLM.
+A block themed casual game written in Rust, rendered with Vulkan through `ash`.
 
-## Building on Windows
+The world is a grid of 8x8 chunks with simple height variation. The camera flies with WASD and mouse look, and the debug HUD shows position and FPS in the top-left corner.
 
-You need CMake, Ninja and a MinGW toolchain. With [scoop](https://scoop.sh) installed:
+## Requirements
 
-```powershell
-scoop install cmake ninja mingw
-```
+- Rust 1.85 or newer
+- A GPU and driver with Vulkan 1.0 or newer
+- The Vulkan SDK, for `glslc` and validation layers
 
-The project uses [vcpkg](https://github.com/microsoft/vcpkg) for its libraries. Set it up once:
-
-```powershell
-git clone https://github.com/microsoft/vcpkg "$env:LOCALAPPDATA\vcpkg"
-& "$env:LOCALAPPDATA\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
-& "$env:LOCALAPPDATA\vcpkg\vcpkg.exe" install glfw3 glew glm freeglut --triplet x64-mingw-dynamic
-```
-
-Then build:
+On Windows with [scoop](https://scoop.sh):
 
 ```powershell
-.\build.ps1
+scoop install vulkan
 ```
 
-Add `-Release` for an optimized build, or `-Clean` to delete `build/` first:
+On Debian and Ubuntu:
 
-```powershell
-.\build.ps1 -Release
-.\build.ps1 -Clean
+```sh
+sudo apt install vulkan-tools libvulkan-dev glslang-tools
 ```
 
-If vcpkg lives somewhere else, point `VCPKG_ROOT` at it before running the script.
+If `glslc` is not on `PATH`, the build script looks for it under `VULKAN_SDK`. Set that variable if your SDK lives somewhere unusual.
 
 ## Running
 
-```powershell
-.\build\bin\goblock.exe
+```sh
+cargo run --release
 ```
 
-The executable looks for its shaders and the font in the source tree using paths baked in at configure time, so you can launch it from any directory. The build copies the DLLs it needs (GLFW, GLEW, freeglut, and the MinGW runtime) next to `goblock.exe`.
+The first build compiles the Vulkan stack and every shader to SPIR-V, so it takes a few minutes.
 
-## Building on Linux
+### Controls
 
-With GLFW, GLEW, GLUT and GLM available from your package manager:
+| Input           | Action      |
+| --------------- | ----------- |
+| `W` `A` `S` `D` | Move        |
+| Mouse           | Look around |
+| `Shift`         | Sprint      |
+| `Space`         | Fly up      |
+| `Ctrl` or `C`   | Fly down    |
+| `Esc`           | Quit        |
 
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
-./build/bin/goblock
+## Shaders
+
+GLSL lives in `shaders/vulkan/` and is compiled by `crates/render/build.rs` into `${OUT_DIR}` with `glslc`, then embedded in the binary. The shaders target Vulkan 1.0, so the output is SPIR-V 1.0. Debug builds turn on the validation layer when it is installed and print its messages to stderr.
+
+## Hardware support
+
+The renderer uses Vulkan 1.0 core plus `VK_KHR_surface` and `VK_KHR_swapchain`, and enables no optional device features. Push constants stay under the 128 bytes Vulkan 1.0 guarantees. A few extras are used only when the device has them:
+
+| Extra                  | Fallback                        |
+| ---------------------- | ------------------------------- |
+| 4x MSAA                | No multisampling                |
+| Mailbox present mode   | FIFO (vsync)                    |
+| sRGB swapchain format  | First format the surface offers |
+| 32-bit or 24-bit depth | 16-bit depth                    |
+| Opaque composite alpha | Whatever the surface supports   |
+| Validation layer       | Skipped, with a note on stderr  |
+
+Discrete GPUs are preferred, but integrated, virtual and software devices are accepted too.
+
+## Project layout
+
 ```
+crates/
+  core/     maths, colours, frustum culling
+  world/    blocks, terrain, chunk meshing
+  render/   Vulkan device, swapchain, pipelines, sky, chunk and HUD drawing
+  input/    camera and the InputSource trait
+  app/      window, frame loop, desktop input
+shaders/vulkan/   GLSL sources, compiled to SPIR-V at build time
+```
+
+`crates/core` and `crates/world` have no window or graphics dependency, so their logic is covered by unit tests that run without a GPU. `cargo test --workspace` builds and runs them.
+
+## Platform notes
+
+The `render` crate takes a `RawWindowHandle` and never depends on `winit`, and `app` is the only crate that knows about the windowing system. On Android, a Vulkan surface comes from an `ANativeWindow`, so an Android build adds a module in `app` that passes that handle through. Input already goes through the `InputSource` trait, so touch support means a new implementation rather than camera changes.
+
+Vulkan is not available on every Android device. Devices without a Vulkan 1.0 driver cannot run this build.
 
 ## License
 
