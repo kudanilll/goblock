@@ -18,8 +18,9 @@ class Camera {
 
   void update();
   void process_mouse_movement(float xoffset, float yoffset);
-  void process_keyboard(glm::vec3 direction, float deltaTime,
+  void process_keyboard(glm::vec3 direction, float deltaTime, float speed,
                         const std::vector<Block>& blocks);
+  float get_movement_speed() const;
   bool check_collision(const glm::vec3& new_position,
                        const std::vector<Block>& blocks) const;
 

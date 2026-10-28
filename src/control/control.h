@@ -21,8 +21,12 @@ class Control {
   float block_size;
   float last_x, last_y;
   bool first_mouse;
+  double last_frame;
+  float sprint_speed;
+  float vertical_speed;
 
-  void process_keyboard_input(const std::vector<Block>& blocks);
+  void process_keyboard_input(const std::vector<Block>& blocks,
+                              float delta_time);
   void process_mouse_input();
 };
 

@@ -25,6 +25,8 @@ char sunset_fs_buff[0xFF];
 char night_fs_buff[0xFF];
 char rainy_fs_buff[0xFF];
 char aurora_fs_buff[0xFF];
+char block_vs_buff[0xFF];
+char block_fs_buff[0xFF];
 // char sky_fs_buff[0xFF];
 
 // FPS variable
@@ -40,6 +42,7 @@ GLuint night_shader;
 GLuint rainy_shader;
 GLuint aurora_shader;
 GLuint current_shader;
+GLuint block_shader;
 float time_value;
 
 void update_fps() {
@@ -120,6 +123,8 @@ int main(int argc, char** argv) {
   snprintf(aurora_fs_buff, sizeof(aurora_fs_buff), "%s/sky/aurora.fs",
            SHADERS_DIR);
   snprintf(sky_vs_buff, sizeof(sky_vs_buff), "%s/sky.vs", SHADERS_DIR);
+  snprintf(block_vs_buff, sizeof(block_vs_buff), "%s/block.vs", SHADERS_DIR);
+  snprintf(block_fs_buff, sizeof(block_fs_buff), "%s/block.fs", SHADERS_DIR);
 
 #ifdef __DEBUG_MODE__
   // printf("load shader: %s\n", sky_fs_buff);
@@ -139,6 +144,7 @@ int main(int argc, char** argv) {
   night_shader = load_shader(sky_vs_buff, night_fs_buff);
   rainy_shader = load_shader(sky_vs_buff, rainy_fs_buff);
   aurora_shader = load_shader(sky_vs_buff, aurora_fs_buff);
+  block_shader = load_shader(block_vs_buff, block_fs_buff);
 
   // GLuint color_loc = glGetUniformLocation(sky_shader, "backgroundColor");
   float quad_vertices[] = {-1.0f, 1.0f,  0.0f, -1.0f, -1.0f, 0.0f,
@@ -201,9 +207,9 @@ int main(int argc, char** argv) {
     glUseProgram(sunset_shader);
 
     // Update uniforms
-    GLuint time_location = glGetUniformLocation(current_shader, "time");
-    GLuint view_location = glGetUniformLocation(current_shader, "view");
-    GLuint proj_location = glGetUniformLocation(current_shader, "projection");
+    GLuint time_location = glGetUniformLocation(sunset_shader, "time");
+    GLuint view_location = glGetUniformLocation(sunset_shader, "view");
+    GLuint proj_location = glGetUniformLocation(sunset_shader, "projection");
 
     glUniform1f(time_location, time_value);
     glUniformMatrix4fv(view_location, 1, GL_FALSE,
@@ -211,11 +217,28 @@ int main(int argc, char** argv) {
     glUniformMatrix4fv(proj_location, 1, GL_FALSE,
                        glm::value_ptr(camera.get_projection_matrix()));
 
+    glDepthMask(GL_FALSE);
     glBindVertexArray(sky_vao);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
     glBindVertexArray(0);
+    glDepthMask(GL_TRUE);
 
+    // World
+    glUseProgram(block_shader);
+    glUniformMatrix4fv(glGetUniformLocation(block_shader, "view"), 1,
+                       GL_FALSE,
+                       glm::value_ptr(camera.get_view_matrix()));
+    glUniformMatrix4fv(glGetUniformLocation(block_shader, "projection"), 1,
+                       GL_FALSE,
+                       glm::value_ptr(camera.get_projection_matrix()));
+    glUniform3f(glGetUniformLocation(block_shader, "lightDir"), 0.4f, -1.0f,
+                0.3f);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
     world.draw(camera.get_view_matrix(), camera.get_projection_matrix());
+    glDisable(GL_CULL_FACE);
+    glUseProgram(0);
 
 #ifdef __DEBUG_MODE__
     // Player position
@@ -233,6 +256,8 @@ int main(int argc, char** argv) {
 
     glfwSwapBuffers(window);
     glfwPollEvents();
+
+
   }
 
   glDeleteVertexArrays(1, &sky_vao);

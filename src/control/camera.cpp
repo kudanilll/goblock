@@ -3,11 +3,11 @@
 #include <iostream>
 
 Camera::Camera()
-    : position(glm::vec3(0.0f, 5.0f, 10.0f)),
+    : position(glm::vec3(64.0f, 24.0f, 96.0f)),
       front(glm::vec3(0.0f, 0.0f, -1.0f)),
       up(glm::vec3(0.0f, 1.0f, 0.0f)),
-      yaw(-90.0f),
-      pitch(0.0f),
+      yaw(-135.0f),
+      pitch(-20.0f),
       movement_speed(15.0f),
       mouse_sensitivity(0.3f),
       fov(45.0f) {
@@ -16,10 +16,13 @@ Camera::Camera()
 
 void Camera::update() {}
 
-void Camera::process_keyboard(glm::vec3 direction, float deltaTime,
+void Camera::process_keyboard(glm::vec3 direction, float deltaTime, float speed,
                               const std::vector<Block>& blocks) {
-  float velocity = movement_speed * deltaTime;
-  // position += direction * velocity;
+  if (glm::length(direction) > 0.0f) {
+    direction = glm::normalize(direction);
+  }
+
+  float velocity = speed * deltaTime;
   glm::vec3 new_position = position + direction * velocity;
 
   // Periksa tabrakan dengan setiap blok
@@ -27,6 +30,8 @@ void Camera::process_keyboard(glm::vec3 direction, float deltaTime,
     position = new_position;
   }
 }
+
+float Camera::get_movement_speed() const { return movement_speed; }
 
 void Camera::process_mouse_movement(float xoffset, float yoffset) {
   xoffset *= mouse_sensitivity;
