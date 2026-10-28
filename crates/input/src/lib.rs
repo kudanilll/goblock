@@ -5,8 +5,10 @@
 //! see an [`InputState`].
 
 pub mod camera;
+pub mod player;
 
 pub use camera::Camera;
+pub use player::Player;
 
 use glam::Vec2;
 
@@ -15,7 +17,7 @@ use glam::Vec2;
 pub struct InputState {
     /// Movement on the horizontal plane, `x` = right, `y` = forward.
     pub move_axes: Vec2,
-    /// Fly up (+) or down (-).
+    /// Jump, or fly up (+); fly down (-).
     pub vertical: f32,
     /// Mouse look delta in screen pixels for this frame.
     pub look_delta: Vec2,

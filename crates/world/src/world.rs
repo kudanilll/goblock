@@ -122,6 +122,12 @@ impl World {
         }
     }
 
+    /// Whether the chunk holding world column (x, z) is loaded. Movement
+    /// should wait for it, since unloaded space reads as empty air.
+    pub fn is_loaded(&self, x: i32, z: i32) -> bool {
+        self.chunks.contains_key(&chunk_of(x, z))
+    }
+
     /// Whether `point` is inside a solid block. Chunks that are not loaded
     /// count as empty.
     pub fn is_solid(&self, point: Vec3) -> bool {
@@ -317,6 +323,7 @@ mod tests {
         let centre = Vec3::new(x as f32, 0.0, z as f32);
         pump(&mut world, centre, |w| w.stats().1 == chunks_within(1));
 
+        assert!(world.is_loaded(x, z));
         let height = world.terrain().sample(x, z).height;
         let (fx, fz) = (x as f32 + 0.5, z as f32 + 0.5);
         assert!(world.is_solid(Vec3::new(fx, height as f32 + 0.5, fz)));
@@ -326,6 +333,7 @@ mod tests {
     #[test]
     fn unloaded_space_is_empty() {
         let world = World::new(1, 1).unwrap();
+        assert!(!world.is_loaded(0, 0));
         assert_eq!(world.block_at(IVec3::new(0, 10, 0)), BlockId::Air);
     }
 }

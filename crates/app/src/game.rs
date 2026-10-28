@@ -2,16 +2,18 @@
 
 use std::time::Instant;
 
-use glam::Vec3;
+use glam::DVec3;
 
-use goblock_input::{Camera, InputState};
+use goblock_input::{Camera, InputState, Player};
 use goblock_world::{BlockId, World, WorldEvent, CHUNK_SIZE};
 
 /// Chunks kept meshed around the player.
 pub const VIEW_DISTANCE: i32 = 16;
 
 pub struct Game {
+    /// Rides on the player's eyes.
     pub camera: Camera,
+    pub player: Player,
     pub world: World,
     screen_width: f32,
     screen_height: f32,
@@ -23,18 +25,25 @@ pub struct Game {
 }
 
 impl Game {
-    /// Start a world for `seed` with the camera hovering over dry land near
-    /// the origin.
+    /// Start a world for `seed` with the player above dry land near the
+    /// origin. The player drops onto the ground, or onto a tree, once the
+    /// chunk below has loaded.
     pub fn new(seed: u64) -> std::io::Result<Self> {
         let world = World::new(seed, VIEW_DISTANCE)?;
         let (x, z) = world.terrain().find_spawn();
         let ground = world.terrain().sample(x, z).height;
 
+        let player = Player::new(DVec3::new(
+            x as f64 + 0.5,
+            (ground + 12) as f64,
+            z as f64 + 0.5,
+        ));
         let mut camera = Camera::default();
-        camera.position = Vec3::new(x as f32 + 0.5, (ground + 12) as f32, z as f32 + 0.5);
+        camera.position = player.eye();
 
         Ok(Self {
             camera,
+            player,
             world,
             screen_width: 800.0,
             screen_height: 600.0,
@@ -97,24 +106,26 @@ impl Game {
 
         self.camera
             .process_mouse_delta(input.look_delta.x, input.look_delta.y);
+        let sprinting = input.sprint && input.move_axes != glam::Vec2::ZERO;
+        self.camera.ease_fov(sprinting, delta_time);
 
-        let mut direction = Vec3::ZERO;
-        direction += self.camera.front * input.move_axes.y;
-        direction += self.camera.right * input.move_axes.x;
-        direction += Vec3::Y * input.vertical;
-
-        if direction.length_squared() > 0.0 {
-            let speed = if input.sprint {
-                self.camera.movement_speed() * 2.5
-            } else if input.vertical != 0.0 && input.move_axes == glam::Vec2::ZERO {
-                self.camera.vertical_speed()
-            } else {
-                self.camera.movement_speed()
-            };
+        // Unloaded chunks read as air, so the player would fall straight
+        // through them. Hold still until the ground below exists.
+        let feet = self.player.feet;
+        if self
+            .world
+            .is_loaded(feet.x.floor() as i32, feet.z.floor() as i32)
+        {
             let world = &self.world;
-            self.camera
-                .move_and_collide(direction, delta_time, speed, |p| world.is_solid(p));
+            self.player.update(
+                input,
+                self.camera.front,
+                self.camera.right,
+                delta_time,
+                |cell| world.block_at(cell).is_solid(),
+            );
         }
+        self.camera.position = self.player.eye();
     }
 
     /// Load and unload chunks around the camera.
@@ -129,6 +140,7 @@ impl Game {
             format!("POS X{:.0} Y{:.0} Z{:.0}", p.x, p.y, p.z),
             format!("FPS {:.0}", self.fps),
             format!("BIOME {}", biome.name().to_uppercase()),
+            format!("MODE {}", if self.player.flying { "FLY" } else { "WALK" }),
             format!("CHUNKS {gpu_chunks}"),
             // Signed, so it can be typed back on the command line as is.
             format!("SEED {}", self.world.terrain().seed() as i64),
@@ -155,12 +167,25 @@ mod tests {
     fn hud_reports_position_fps_biome_chunks_and_seed() {
         let game = Game::new(u64::MAX).unwrap();
         let lines = game.hud_lines(7);
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines.len(), 6);
         assert!(lines[0].starts_with("POS "));
         assert!(lines[1].starts_with("FPS "));
         assert!(lines[2].starts_with("BIOME "));
-        assert_eq!(lines[3], "CHUNKS 7");
-        assert_eq!(lines[4], "SEED -1");
+        assert_eq!(lines[3], "MODE WALK");
+        assert_eq!(lines[4], "CHUNKS 7");
+        assert_eq!(lines[5], "SEED -1");
+    }
+
+    #[test]
+    fn the_player_waits_for_the_ground_to_load() {
+        // Nothing has streamed in yet, so the space below reads as air.
+        let mut game = Game::new(3).unwrap();
+        let before = game.player.feet;
+        for _ in 0..30 {
+            game.update(1.0 / 60.0, &InputState::default());
+        }
+        assert_eq!(game.player.feet, before);
+        assert_eq!(game.camera.position, game.player.eye());
     }
 
     #[test]

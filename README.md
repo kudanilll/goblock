@@ -41,15 +41,18 @@ cargo run --release -- "my world"
 
 ### Controls
 
-| Input           | Action      |
-| --------------- | ----------- |
-| `W` `A` `S` `D` | Move        |
-| Mouse           | Look around |
-| `Shift`         | Sprint      |
-| `Space`         | Fly up      |
-| `Ctrl` or `C`   | Fly down    |
-| `F11`           | Fullscreen  |
-| `Esc`           | Quit        |
+| Input                | Action                     |
+| -------------------- | -------------------------- |
+| `W` `A` `S` `D`      | Walk                       |
+| Mouse                | Look around                |
+| `Shift`              | Sprint                     |
+| `Space`              | Jump; while flying, fly up |
+| `Space` twice, quick | Start or stop flying       |
+| `Ctrl` or `C`        | While flying, fly down     |
+| `F11`                | Fullscreen                 |
+| `Esc`                | Quit                       |
+
+The player is a 0.6 × 1.8 block body that walks under gravity and collides with blocks on every side. Flying stops on its own when you touch down.
 
 ## Textures
 
@@ -65,15 +68,15 @@ Lighting is done in linear HDR and tone mapped at the end: sunlight with soft sh
 
 The renderer uses Vulkan 1.0 core plus `VK_KHR_surface` and `VK_KHR_swapchain`, and enables no optional device features. Push constants stay under the 128 bytes Vulkan 1.0 guarantees. A few extras are used only when the device has them:
 
-| Extra                  | Fallback                        |
-| ---------------------- | ------------------------------- |
-| 4x MSAA                | No multisampling                |
-| Mailbox present mode   | FIFO (vsync)                    |
-| sRGB swapchain format  | First format the surface offers |
-| 32-bit or 24-bit depth | 16-bit depth                    |
-| Opaque composite alpha | Whatever the surface supports   |
-| Validation layer       | Skipped, with a note on stderr  |
-| Sun shadows            | Off on virtual and software GPUs; 1024 px on integrated, 2048 px on discrete |
+| Extra                  | Fallback                                                  |
+| ---------------------- | --------------------------------------------------------- |
+| 4x MSAA                | No multisampling                                          |
+| Mailbox present mode   | FIFO (vsync)                                              |
+| sRGB swapchain format  | First format the surface offers                           |
+| 32-bit or 24-bit depth | 16-bit depth                                              |
+| Opaque composite alpha | Whatever the surface supports                             |
+| Validation layer       | Skipped, with a note on stderr                            |
+| Sun shadows            | 2048 px on discrete, 1024 px on integrated GPUs, else off |
 
 Discrete GPUs are preferred, but integrated, virtual and software devices are accepted too.
 
