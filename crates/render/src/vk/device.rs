@@ -1,5 +1,5 @@
 //! Vulkan setup: instance, surface, physical and logical device, and the
-//! render pass.
+//! render passes.
 //!
 //! Only Vulkan 1.0 core plus `VK_KHR_surface` and `VK_KHR_swapchain` are
 //! required. Anything beyond that (validation, 4x MSAA, mailbox present) is
@@ -27,7 +27,10 @@ pub struct Device {
     pub swapchain_fn: ash::khr::swapchain::Device,
     pub queue: vk::Queue,
     pub queue_family: u32,
-    pub render_pass: vk::RenderPass,
+    /// Sky and solid blocks into offscreen images.
+    pub scene_pass: vk::RenderPass,
+    /// The scene, water and HUD onto the swapchain image.
+    pub final_pass: vk::RenderPass,
     pub surface_format: vk::SurfaceFormatKHR,
     pub depth_format: vk::Format,
     pub msaa_samples: vk::SampleCountFlags,
@@ -73,8 +76,9 @@ impl Device {
             None
         };
 
-        let render_pass =
-            create_render_pass(&device, surface_format.format, depth_format, msaa_samples)?;
+        let scene_pass = create_scene_pass(&device, depth_format, msaa_samples)?;
+        let final_pass =
+            create_final_pass(&device, surface_format.format, depth_format, msaa_samples)?;
 
         Ok(Self {
             entry,
@@ -86,7 +90,8 @@ impl Device {
             swapchain_fn,
             queue,
             queue_family,
-            render_pass,
+            scene_pass,
+            final_pass,
             surface_format,
             depth_format,
             msaa_samples,
@@ -101,7 +106,8 @@ impl Device {
         if let Some((loader, messenger)) = self.debug_messenger.take() {
             loader.destroy_debug_utils_messenger(messenger, None);
         }
-        self.device.destroy_render_pass(self.render_pass, None);
+        self.device.destroy_render_pass(self.scene_pass, None);
+        self.device.destroy_render_pass(self.final_pass, None);
         self.surface_fn.destroy_surface(self.surface, None);
         self.device.destroy_device(None);
         self.instance.destroy_instance(None);
@@ -344,74 +350,105 @@ fn pick_sample_count(props: &vk::PhysicalDeviceProperties) -> vk::SampleCountFla
     }
 }
 
-unsafe fn create_render_pass(
-    device: &ash::Device,
-    color_format: vk::Format,
-    depth_format: vk::Format,
-    samples: vk::SampleCountFlags,
-) -> Result<vk::RenderPass, VkError> {
-    let msaa = samples != vk::SampleCountFlags::TYPE_1;
+/// Format of the offscreen copy of the scene that the water shader reads.
+/// Every Vulkan 1.0 device can render to it, blend it and sample it.
+pub const SCENE_COLOR_FORMAT: vk::Format = vk::Format::R8G8B8A8_SRGB;
+/// The scene's depth as the water shader reads it. Depth is also written as
+/// a colour because Vulkan 1.0 cannot resolve a multisampled depth buffer.
+pub const SCENE_DEPTH_FORMAT: vk::Format = vk::Format::R32_SFLOAT;
 
-    // Attachment order is colour, then the resolve target when MSAA is on,
-    // then depth. Framebuffers and clear values use the same order.
-    let mut attachments = vec![vk::AttachmentDescription::default()
-        .format(color_format)
+fn attachment(
+    format: vk::Format,
+    samples: vk::SampleCountFlags,
+    load: vk::AttachmentLoadOp,
+    store: vk::AttachmentStoreOp,
+    final_layout: vk::ImageLayout,
+) -> vk::AttachmentDescription {
+    vk::AttachmentDescription::default()
+        .format(format)
         .samples(samples)
-        .load_op(vk::AttachmentLoadOp::CLEAR)
-        // With MSAA only the resolved image is kept.
-        .store_op(if msaa {
-            vk::AttachmentStoreOp::DONT_CARE
-        } else {
-            vk::AttachmentStoreOp::STORE
-        })
+        .load_op(load)
+        .store_op(store)
         .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
         .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
         .initial_layout(vk::ImageLayout::UNDEFINED)
-        .final_layout(if msaa {
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
-        } else {
-            vk::ImageLayout::PRESENT_SRC_KHR
-        })];
+        .final_layout(final_layout)
+}
 
-    if msaa {
-        attachments.push(
-            vk::AttachmentDescription::default()
-                .format(color_format)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .load_op(vk::AttachmentLoadOp::DONT_CARE)
-                .store_op(vk::AttachmentStoreOp::STORE)
-                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-                .initial_layout(vk::ImageLayout::UNDEFINED)
-                .final_layout(vk::ImageLayout::PRESENT_SRC_KHR),
-        );
+fn color_ref(attachment: u32) -> vk::AttachmentReference {
+    vk::AttachmentReference {
+        attachment,
+        layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
     }
+}
 
+/// The scene pass draws the sky and the opaque and cut-out blocks into
+/// offscreen images: the colour, and the depth written as a colour. With
+/// MSAA both are resolved into single-sample images. The depth buffer is
+/// kept for the final pass. Attachment order is colour, depth copy, their
+/// resolve targets when MSAA is on, then the depth buffer.
+unsafe fn create_scene_pass(
+    device: &ash::Device,
+    depth_format: vk::Format,
+    samples: vk::SampleCountFlags,
+) -> Result<vk::RenderPass, VkError> {
+    use vk::{AttachmentLoadOp as Load, AttachmentStoreOp as Store, ImageLayout as Layout};
+    let msaa = samples != vk::SampleCountFlags::TYPE_1;
+    let single = vk::SampleCountFlags::TYPE_1;
+    let read = Layout::SHADER_READ_ONLY_OPTIMAL;
+    let drawn = Layout::COLOR_ATTACHMENT_OPTIMAL;
+
+    let mut attachments = if msaa {
+        vec![
+            attachment(
+                SCENE_COLOR_FORMAT,
+                samples,
+                Load::CLEAR,
+                Store::DONT_CARE,
+                drawn,
+            ),
+            attachment(
+                SCENE_DEPTH_FORMAT,
+                samples,
+                Load::CLEAR,
+                Store::DONT_CARE,
+                drawn,
+            ),
+            attachment(
+                SCENE_COLOR_FORMAT,
+                single,
+                Load::DONT_CARE,
+                Store::STORE,
+                read,
+            ),
+            attachment(
+                SCENE_DEPTH_FORMAT,
+                single,
+                Load::DONT_CARE,
+                Store::STORE,
+                read,
+            ),
+        ]
+    } else {
+        vec![
+            attachment(SCENE_COLOR_FORMAT, single, Load::CLEAR, Store::STORE, read),
+            attachment(SCENE_DEPTH_FORMAT, single, Load::CLEAR, Store::STORE, read),
+        ]
+    };
     let depth_ref = vk::AttachmentReference {
         attachment: attachments.len() as u32,
-        layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        layout: Layout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
-    attachments.push(
-        vk::AttachmentDescription::default()
-            .format(depth_format)
-            .samples(samples)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
-    );
+    attachments.push(attachment(
+        depth_format,
+        samples,
+        Load::CLEAR,
+        Store::STORE,
+        Layout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    ));
 
-    let color_refs = [vk::AttachmentReference {
-        attachment: 0,
-        layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-    }];
-    let resolve_refs = [vk::AttachmentReference {
-        attachment: 1,
-        layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-    }];
-
+    let color_refs = [color_ref(0), color_ref(1)];
+    let resolve_refs = [color_ref(2), color_ref(3)];
     let mut subpass = vk::SubpassDescription::default()
         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
         .color_attachments(&color_refs)
@@ -420,8 +457,110 @@ unsafe fn create_render_pass(
         subpass = subpass.resolve_attachments(&resolve_refs);
     }
 
-    // All frames in flight share one depth image and one MSAA image, so this
-    // frame's clear has to wait for the previous frame's writes to finish.
+    let output = vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT;
+    let tests =
+        vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS;
+    let writes =
+        vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
+    let dependencies = [
+        // All frames in flight share these images, so the previous frame's
+        // final pass has to finish reading them before this pass clears them.
+        vk::SubpassDependency::default()
+            .src_subpass(vk::SUBPASS_EXTERNAL)
+            .dst_subpass(0)
+            .src_stage_mask(output | tests | vk::PipelineStageFlags::FRAGMENT_SHADER)
+            .src_access_mask(writes)
+            .dst_stage_mask(output | tests)
+            .dst_access_mask(writes),
+        // The final pass samples the scene and tests water against its depth.
+        vk::SubpassDependency::default()
+            .src_subpass(0)
+            .dst_subpass(vk::SUBPASS_EXTERNAL)
+            .src_stage_mask(output | tests)
+            .src_access_mask(writes)
+            .dst_stage_mask(vk::PipelineStageFlags::FRAGMENT_SHADER | tests)
+            .dst_access_mask(
+                vk::AccessFlags::SHADER_READ
+                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            ),
+    ];
+
+    let subpasses = [subpass];
+    let info = vk::RenderPassCreateInfo::default()
+        .attachments(&attachments)
+        .subpasses(&subpasses)
+        .dependencies(&dependencies);
+    device
+        .create_render_pass(&info, None)
+        .map_err(|e| VkError::new("create_render_pass", e))
+}
+
+/// The final pass copies the scene onto the swapchain image, then draws the
+/// water against the scene's depth buffer, then the HUD. Attachment order is
+/// colour, the resolve target when MSAA is on, then the depth buffer.
+unsafe fn create_final_pass(
+    device: &ash::Device,
+    color_format: vk::Format,
+    depth_format: vk::Format,
+    samples: vk::SampleCountFlags,
+) -> Result<vk::RenderPass, VkError> {
+    use vk::{AttachmentLoadOp as Load, AttachmentStoreOp as Store, ImageLayout as Layout};
+    let msaa = samples != vk::SampleCountFlags::TYPE_1;
+    let single = vk::SampleCountFlags::TYPE_1;
+    let present = Layout::PRESENT_SRC_KHR;
+    let depth_layout = Layout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    // The copied scene covers every pixel, so nothing needs clearing.
+    let mut attachments = if msaa {
+        let drawn = Layout::COLOR_ATTACHMENT_OPTIMAL;
+        vec![
+            attachment(
+                color_format,
+                samples,
+                Load::DONT_CARE,
+                Store::DONT_CARE,
+                drawn,
+            ),
+            attachment(color_format, single, Load::DONT_CARE, Store::STORE, present),
+        ]
+    } else {
+        vec![attachment(
+            color_format,
+            single,
+            Load::DONT_CARE,
+            Store::STORE,
+            present,
+        )]
+    };
+    let depth_ref = vk::AttachmentReference {
+        attachment: attachments.len() as u32,
+        layout: depth_layout,
+    };
+    attachments.push(
+        attachment(
+            depth_format,
+            samples,
+            Load::LOAD,
+            Store::DONT_CARE,
+            depth_layout,
+        )
+        .initial_layout(depth_layout),
+    );
+
+    let color_refs = [color_ref(0)];
+    let resolve_refs = [color_ref(1)];
+    let mut subpass = vk::SubpassDescription::default()
+        .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+        .color_attachments(&color_refs)
+        .depth_stencil_attachment(&depth_ref);
+    if msaa {
+        subpass = subpass.resolve_attachments(&resolve_refs);
+    }
+
+    // The MSAA target is shared by all frames in flight, and the swapchain
+    // image is only free once the acquire semaphore has been waited on at
+    // the colour output stage.
     let dependency = vk::SubpassDependency::default()
         .src_subpass(vk::SUBPASS_EXTERNAL)
         .dst_subpass(0)
@@ -435,10 +574,12 @@ unsafe fn create_render_pass(
         )
         .dst_stage_mask(
             vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
         )
         .dst_access_mask(
             vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
                 | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
         );
 
@@ -448,7 +589,6 @@ unsafe fn create_render_pass(
         .attachments(&attachments)
         .subpasses(&subpasses)
         .dependencies(&dependencies);
-
     device
         .create_render_pass(&info, None)
         .map_err(|e| VkError::new("create_render_pass", e))

@@ -396,6 +396,9 @@ pub struct PipelineConfig {
     /// Render depth only, for the shadow map: one sample, no colour output,
     /// and a depth bias so surfaces do not shadow themselves.
     pub depth_only: bool,
+    /// Colour attachments in the subpass the pipeline draws into; every one
+    /// gets the same blend state.
+    pub color_attachments: u32,
     pub descriptor_layouts: Vec<vk::DescriptorSetLayout>,
     /// Value for specialization constant 0 in both shader stages, if the
     /// shaders declare one.
@@ -490,13 +493,9 @@ pub fn create_pipeline(
         .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
         .alpha_blend_op(vk::BlendOp::ADD);
 
-    let blend_attachments = [blend_attachment];
+    let blend_attachments = vec![blend_attachment; config.color_attachments as usize];
     let color_blend =
-        vk::PipelineColorBlendStateCreateInfo::default().attachments(if config.depth_only {
-            &[]
-        } else {
-            &blend_attachments
-        });
+        vk::PipelineColorBlendStateCreateInfo::default().attachments(&blend_attachments);
 
     let push_range = [vk::PushConstantRange::default()
         .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)

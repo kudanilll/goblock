@@ -21,8 +21,6 @@ layout(location = 2) out vec3 vView;
 layout(location = 3) out vec3 vShadow;
 layout(location = 4) out float vOcclusion;
 layout(location = 5) flat out uint vFace;
-// Blocks of water below a water face; unused for other blocks.
-layout(location = 6) out float vWaterDepth;
 
 void main() {
     vec3 view = pc.chunkOffset.xyz + vec3(aPosition.xyz) / 16.0;
@@ -39,5 +37,4 @@ void main() {
     vOcclusion = float(aUvLayerShade.w) / 255.0;
     vView = view;
     vFace = aPosition.w;
-    vWaterDepth = aTint.a * 255.0;
 }

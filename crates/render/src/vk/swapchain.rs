@@ -2,20 +2,27 @@
 
 use ash::vk;
 
-use super::device::{Device, MAX_FRAMES_IN_FLIGHT};
+use super::device::{Device, MAX_FRAMES_IN_FLIGHT, SCENE_COLOR_FORMAT, SCENE_DEPTH_FORMAT};
 use super::error::VkError;
 
 pub struct Swapchain {
     pub handle: vk::SwapchainKHR,
     pub extent: vk::Extent2D,
+    /// Final pass framebuffers, one per swapchain image.
     pub framebuffers: Vec<vk::Framebuffer>,
+    /// Scene pass framebuffer, shared by all frames in flight.
+    pub scene_framebuffer: vk::Framebuffer,
     /// Signalled when rendering into image `i` finishes; present waits on it.
     /// There is one per image because the presentation engine may still hold
     /// a semaphore after the frame that signalled it has completed.
     pub render_finished: Vec<vk::Semaphore>,
     image_views: Vec<vk::ImageView>,
     depth: Attachment,
-    msaa: Option<Attachment>,
+    /// The scene's colour and depth copy, which the water shader reads.
+    scene: [Attachment; 2],
+    /// With MSAA: the final colour target, then the scene's colour and depth
+    /// copy, which resolve into `scene`.
+    msaa: Option<[Attachment; 3]>,
 }
 
 pub struct FrameSync {
@@ -94,64 +101,94 @@ impl Swapchain {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| VkError::new("create_semaphore", e))?;
 
+        let samples = device.msaa_samples;
+        let color = vk::ImageAspectFlags::COLOR;
         let depth = Attachment::new(
             device,
             extent,
             device.depth_format,
+            samples,
             vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
             vk::ImageAspectFlags::DEPTH,
         )?;
 
-        let msaa = if device.msaa_samples != vk::SampleCountFlags::TYPE_1 {
-            Some(Attachment::new(
-                device,
-                extent,
-                format.format,
-                vk::ImageUsageFlags::COLOR_ATTACHMENT,
-                vk::ImageAspectFlags::COLOR,
-            )?)
+        let sampled = vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED;
+        let single = vk::SampleCountFlags::TYPE_1;
+        let scene = [
+            Attachment::new(device, extent, SCENE_COLOR_FORMAT, single, sampled, color)?,
+            Attachment::new(device, extent, SCENE_DEPTH_FORMAT, single, sampled, color)?,
+        ];
+
+        let msaa = if samples != vk::SampleCountFlags::TYPE_1 {
+            let target = |format| {
+                let usage = vk::ImageUsageFlags::COLOR_ATTACHMENT;
+                Attachment::new(device, extent, format, samples, usage, color)
+            };
+            Some([
+                target(format.format)?,
+                target(SCENE_COLOR_FORMAT)?,
+                target(SCENE_DEPTH_FORMAT)?,
+            ])
         } else {
             None
         };
 
-        let mut framebuffers = Vec::with_capacity(image_views.len());
-        for &view in &image_views {
-            // Same order as the render pass: colour, resolve (MSAA only), depth.
-            let attachments = match &msaa {
-                Some(target) => vec![target.view, view, depth.view],
-                None => vec![view, depth.view],
-            };
+        // Same order as the scene pass: colour, depth copy, their resolve
+        // targets (MSAA only), depth.
+        let scene_views = match &msaa {
+            Some([_, color, depth_copy]) => {
+                vec![
+                    color.view,
+                    depth_copy.view,
+                    scene[0].view,
+                    scene[1].view,
+                    depth.view,
+                ]
+            }
+            None => vec![scene[0].view, scene[1].view, depth.view],
+        };
+        let scene_framebuffer =
+            create_framebuffer(device, device.scene_pass, &scene_views, extent)?;
 
-            let info = vk::FramebufferCreateInfo::default()
-                .render_pass(device.render_pass)
-                .attachments(&attachments)
-                .width(extent.width)
-                .height(extent.height)
-                .layers(1);
-
-            let framebuffer = unsafe { device.device.create_framebuffer(&info, None) }
-                .map_err(|e| VkError::new("create_framebuffer", e))?;
-            framebuffers.push(framebuffer);
-        }
+        let framebuffers = image_views
+            .iter()
+            .map(|&view| {
+                // Same order as the final pass: colour, resolve (MSAA only), depth.
+                let attachments = match &msaa {
+                    Some([target, ..]) => vec![target.view, view, depth.view],
+                    None => vec![view, depth.view],
+                };
+                create_framebuffer(device, device.final_pass, &attachments, extent)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self {
             handle,
             extent,
             framebuffers,
+            scene_framebuffer,
             render_finished,
             image_views,
             depth,
+            scene,
             msaa,
         })
     }
 
-    /// Rebuild everything that depends on the surface size.
-    pub fn recreate(&mut self, device: &Device, width: u32, height: u32) -> Result<(), VkError> {
+    /// Views of the scene's colour and depth copy, as the final pass reads
+    /// them.
+    pub fn scene_views(&self) -> [vk::ImageView; 2] {
+        [self.scene[0].view, self.scene[1].view]
+    }
+
+    /// Rebuild everything that depends on the surface size. Returns false
+    /// when the surface has no size and the old swapchain was kept.
+    pub fn recreate(&mut self, device: &Device, width: u32, height: u32) -> Result<bool, VkError> {
         // A minimised window can report a 0x0 surface, which no swapchain can
         // match. Keep the old one until the window has a size again.
         let caps = surface_capabilities(device)?;
         if caps.current_extent.width == 0 || caps.current_extent.height == 0 {
-            return Ok(());
+            return Ok(false);
         }
 
         unsafe { device.device.device_wait_idle() }
@@ -159,7 +196,7 @@ impl Swapchain {
 
         unsafe { self.destroy(device) };
         *self = Self::new(device, width, height)?;
-        Ok(())
+        Ok(true)
     }
 
     /// Destroyed handles are reset to null, so calling this twice is safe.
@@ -170,15 +207,19 @@ impl Swapchain {
         for framebuffer in self.framebuffers.drain(..) {
             device.device.destroy_framebuffer(framebuffer, None);
         }
+        device
+            .device
+            .destroy_framebuffer(std::mem::take(&mut self.scene_framebuffer), None);
         for view in self.image_views.drain(..) {
             device.device.destroy_image_view(view, None);
         }
         for semaphore in self.render_finished.drain(..) {
             device.device.destroy_semaphore(semaphore, None);
         }
-        if let Some(mut msaa) = self.msaa.take() {
-            msaa.destroy(device);
+        for target in self.msaa.iter_mut().flatten().chain(&mut self.scene) {
+            target.destroy(device);
         }
+        self.msaa = None;
         self.depth.destroy(device);
         device
             .swapchain_fn
@@ -215,8 +256,8 @@ impl FrameSync {
     }
 }
 
-/// An image the render pass draws into but never presents: the depth buffer
-/// or the multisampled colour target.
+/// An image a render pass draws into but never presents: the depth buffer,
+/// a multisampled target, or the scene images the water shader reads.
 struct Attachment {
     image: vk::Image,
     memory: vk::DeviceMemory,
@@ -228,6 +269,7 @@ impl Attachment {
         device: &Device,
         extent: vk::Extent2D,
         format: vk::Format,
+        samples: vk::SampleCountFlags,
         usage: vk::ImageUsageFlags,
         aspect: vk::ImageAspectFlags,
     ) -> Result<Self, VkError> {
@@ -241,7 +283,7 @@ impl Attachment {
             })
             .mip_levels(1)
             .array_layers(1)
-            .samples(device.msaa_samples)
+            .samples(samples)
             .tiling(vk::ImageTiling::OPTIMAL)
             .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
@@ -287,6 +329,22 @@ impl Attachment {
             .device
             .free_memory(std::mem::take(&mut self.memory), None);
     }
+}
+
+fn create_framebuffer(
+    device: &Device,
+    render_pass: vk::RenderPass,
+    attachments: &[vk::ImageView],
+    extent: vk::Extent2D,
+) -> Result<vk::Framebuffer, VkError> {
+    let info = vk::FramebufferCreateInfo::default()
+        .render_pass(render_pass)
+        .attachments(attachments)
+        .width(extent.width)
+        .height(extent.height)
+        .layers(1);
+    unsafe { device.device.create_framebuffer(&info, None) }
+        .map_err(|e| VkError::new("create_framebuffer", e))
 }
 
 fn surface_capabilities(device: &Device) -> Result<vk::SurfaceCapabilitiesKHR, VkError> {

@@ -15,9 +15,12 @@ layout(set = 0, binding = 0) uniform Frame {
     // xyz: direction toward the sun. w: shadow map texel size, 0 when off.
     vec4 sunDirection;
     // x: distance where fog starts, y: distance where it hides everything.
-    // z: 1 when the camera is under water.
+    // z: 1 when the camera is under water. w: 1 when water traces
+    // screen-space reflections.
     vec4 fog;
 } frame;
+
+layout(set = 0, binding = 2) uniform sampler2DShadow uShadow;
 
 // What the world fades into when seen from under water.
 const vec3 WATER_FOG = vec3(0.04, 0.16, 0.20);
@@ -62,4 +65,35 @@ vec3 skyColor(vec3 dir) {
 // Filmic curve from Krzysztof Narkowicz's fit of the ACES tone mapper.
 vec3 tonemap(vec3 color) {
     return clamp((color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14), 0.0, 1.0);
+}
+
+// Fraction of sunlight reaching the shadow map position `coord`, from a
+// 3x3 block of depth comparisons that softens the shadow's edge.
+float sunlight(vec3 coord) {
+    float texel = frame.sunDirection.w;
+    if (texel == 0.0) {
+        return 1.0;
+    }
+    float lit = 0.0;
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            lit += texture(uShadow, vec3(coord.xy + vec2(x, y) * texel, min(coord.z, 1.0)));
+        }
+    }
+    return lit / 9.0;
+}
+
+// The fog between the camera and a point `distance` away in direction
+// `dir`: its colour in rgb and how much it hides in a.
+vec4 fogBetween(vec3 dir, float distance) {
+    if (frame.fog.z > 0.5) {
+        // Under water, light dies out within a few blocks.
+        return vec4(WATER_FOG, 1.0 - exp(-distance * 0.12));
+    }
+    // Aerial perspective: distant terrain takes on the colour of the sky
+    // behind it. A light haze starts right away, and the fog closes
+    // completely before the edge of the loaded world.
+    float haze = 1.0 - exp(-distance * 0.002);
+    float fog = max(smoothstep(frame.fog.x, frame.fog.y, distance), haze * 0.5);
+    return vec4(skyColor(dir), fog);
 }

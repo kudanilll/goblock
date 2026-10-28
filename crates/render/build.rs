@@ -60,7 +60,19 @@ fn main() {
 
     let glslc = find_glslc().expect("glslc path");
 
-    let shaders = ["sky", "block", "shadow", "hud"];
+    // Water and the scene copy reuse the block and sky vertex shaders.
+    let shaders = [
+        "sky.vert",
+        "sky.frag",
+        "block.vert",
+        "block.frag",
+        "shadow.vert",
+        "shadow.frag",
+        "hud.vert",
+        "hud.frag",
+        "water.frag",
+        "composite.frag",
+    ];
 
     // Shared code that the shaders pull in with #include.
     println!(
@@ -69,31 +81,29 @@ fn main() {
     );
 
     for name in shaders {
-        for stage in ["vert", "frag"] {
-            let input = shader_dir.join(format!("{name}.{stage}"));
-            let output = out_dir.join(format!("{name}.{stage}.spv"));
+        let input = shader_dir.join(name);
+        let output = out_dir.join(format!("{name}.spv"));
 
-            println!("cargo:rerun-if-changed={}", input.display());
+        println!("cargo:rerun-if-changed={}", input.display());
 
-            let result = Command::new(&glslc)
-                .arg("--target-env=vulkan1.0")
-                .arg("-O")
-                .arg("-I")
-                .arg(&shader_dir)
-                .arg(&input)
-                .arg("-o")
-                .arg(&output)
-                .status()
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "failed to run glslc at {}: {e}\nInstall the Vulkan SDK and set VULKAN_SDK.",
-                        glslc.display()
-                    )
-                });
+        let result = Command::new(&glslc)
+            .arg("--target-env=vulkan1.0")
+            .arg("-O")
+            .arg("-I")
+            .arg(&shader_dir)
+            .arg(&input)
+            .arg("-o")
+            .arg(&output)
+            .status()
+            .unwrap_or_else(|e| {
+                panic!(
+                    "failed to run glslc at {}: {e}\nInstall the Vulkan SDK and set VULKAN_SDK.",
+                    glslc.display()
+                )
+            });
 
-            if !result.success() {
-                panic!("glslc failed for {}", input.display());
-            }
+        if !result.success() {
+            panic!("glslc failed for {}", input.display());
         }
     }
 

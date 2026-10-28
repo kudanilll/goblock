@@ -6,10 +6,13 @@
 layout(location = 0) in vec2 vNdc;
 
 layout(location = 0) out vec4 outColor;
+// The depth copy: nothing but sky here.
+layout(location = 1) out float outDepth;
 
 void main() {
     if (frame.fog.z > 0.5) {
         outColor = vec4(tonemap(WATER_FOG), 1.0);
+        outDepth = 1.0;
         return;
     }
 
@@ -21,4 +24,5 @@ void main() {
     float toSun = dot(dir, frame.sunDirection.xyz);
     color += SUN_COLOR * 20.0 * smoothstep(0.9995, 0.9998, toSun);
     outColor = vec4(tonemap(color), 1.0);
+    outDepth = 1.0;
 }

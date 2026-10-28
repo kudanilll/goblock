@@ -1,14 +1,17 @@
 //! Per-frame work: wait, acquire, upload, record, submit, present.
 //!
-//! Each frame first renders the sun's shadow map, then the main pass: the
-//! sky, the chunks layer by layer, and the HUD. Lighting, fog and tone
-//! mapping happen in the shaders, fed by one uniform block per frame.
+//! Each frame first renders the sun's shadow map, then the scene pass: the
+//! sky and the opaque and cut-out blocks, into offscreen images. The final
+//! pass copies that scene to the screen and draws the water over it, which
+//! reads the scene for refraction and screen-space reflections, then the
+//! HUD. Lighting, fog and tone mapping happen in the shaders, fed by one
+//! uniform block per frame.
 
 use ash::vk;
 use glam::{IVec2, Mat4, Vec3};
 use goblock_world::ChunkMesh;
 
-use super::chunks::{ChunkBuffers, VisibleChunk, LAYERS, VERTEX_STRIDE};
+use super::chunks::{ChunkBuffers, LAYERS, VERTEX_STRIDE};
 use super::device::{Device, MAX_FRAMES_IN_FLIGHT};
 use super::error::VkError;
 use super::resources::{create_pipeline, DynamicBuffer, ImageData, PipelineConfig, Texture};
@@ -26,8 +29,9 @@ const FRAME_UNIFORM_SIZE: usize = 3 * 64 + 3 * 16;
 const HUD_VERTEX_CAPACITY: usize = 4096;
 /// Where fog begins, as a fraction of [`FrameView::fog_end`].
 const FOG_START: f32 = 0.6;
-/// Shadow-casting layers, in draw order: opaque blocks, then leaves.
-const SHADOW_LAYERS: usize = 2;
+/// Layers drawn in the scene pass and into the shadow map: opaque blocks,
+/// then leaves. Water, the last layer, is drawn in the final pass.
+const SOLID_LAYERS: usize = 2;
 
 /// Direction toward the sun: mid-afternoon, about 44° above the horizon.
 fn sun_direction() -> Vec3 {
@@ -62,16 +66,24 @@ pub struct Renderer {
 
     chunks: ChunkBuffers,
     shadow: ShadowMap,
-    /// Opaque, cutout and translucent block pipelines, in draw order.
-    block_pipelines: [(vk::Pipeline, vk::PipelineLayout); LAYERS],
+    /// Opaque and cutout block pipelines, in draw order.
+    block_pipelines: [(vk::Pipeline, vk::PipelineLayout); SOLID_LAYERS],
     /// Opaque and cutout shadow casters. Water casts no shadow.
-    shadow_pipelines: [(vk::Pipeline, vk::PipelineLayout); SHADOW_LAYERS],
+    shadow_pipelines: [(vk::Pipeline, vk::PipelineLayout); SOLID_LAYERS],
+    water_pipeline: (vk::Pipeline, vk::PipelineLayout),
+    /// Copies the scene onto the swapchain image.
+    composite_pipeline: (vk::Pipeline, vk::PipelineLayout),
     sky_pipeline: vk::Pipeline,
     sky_pipeline_layout: vk::PipelineLayout,
     hud_pipeline: vk::Pipeline,
     hud_pipeline_layout: vk::PipelineLayout,
+    /// For the scene's colour (filtered) and its depth (exact texels).
+    scene_samplers: [vk::Sampler; 2],
+    /// Whether water traces screen-space reflections.
+    reflections: bool,
 
-    /// Frame uniforms, block textures and the shadow map.
+    /// Frame uniforms, block textures, the shadow map, and the scene's
+    /// colour and depth.
     frame_set_layout: vk::DescriptorSetLayout,
     hud_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
@@ -120,6 +132,8 @@ impl Renderer {
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
             sampler_binding(1),
             sampler_binding(2),
+            sampler_binding(3),
+            sampler_binding(4),
         ];
         let frame_set_layout = device
             .device
@@ -149,34 +163,57 @@ impl Renderer {
                 .offset(offset)
         };
 
-        let mut block_pipelines = [(vk::Pipeline::null(), vk::PipelineLayout::null()); LAYERS];
+        let block_vs = include_bytes!(concat!(env!("OUT_DIR"), "/block.vert.spv"));
+        let block_attributes = vec![
+            chunk_attribute(0, vk::Format::R16G16B16A16_UINT, 0),
+            chunk_attribute(1, vk::Format::R8G8B8A8_UINT, 8),
+            chunk_attribute(2, vk::Format::R8G8B8A8_UNORM, 12),
+        ];
+        let mut block_pipelines =
+            [(vk::Pipeline::null(), vk::PipelineLayout::null()); SOLID_LAYERS];
         for (layer, slot) in block_pipelines.iter_mut().enumerate() {
-            // The shaders' ALPHA_MODE: 0 opaque, 1 cutout, 2 translucent.
-            let translucent = layer == 2;
+            // The shaders' ALPHA_MODE: 0 opaque, 1 cutout.
             let config = PipelineConfig {
-                vs_bytes: include_bytes!(concat!(env!("OUT_DIR"), "/block.vert.spv")),
+                vs_bytes: block_vs,
                 fs_bytes: include_bytes!(concat!(env!("OUT_DIR"), "/block.frag.spv")),
                 vertex_bindings: chunk_binding.clone(),
-                vertex_attributes: vec![
-                    chunk_attribute(0, vk::Format::R16G16B16A16_UINT, 0),
-                    chunk_attribute(1, vk::Format::R8G8B8A8_UINT, 8),
-                    chunk_attribute(2, vk::Format::R8G8B8A8_UNORM, 12),
-                ],
+                vertex_attributes: block_attributes.clone(),
                 push_constant_size: CHUNK_PUSH_SIZE,
                 depth_test: true,
-                depth_write: !translucent,
-                blend: translucent,
-                // Leaves and water are seen from both sides.
+                depth_write: true,
+                blend: false,
+                // Leaves are seen from both sides.
                 cull_back: layer == 0,
                 depth_only: false,
+                // The colour and the depth copy.
+                color_attachments: 2,
                 descriptor_layouts: vec![frame_set_layout],
                 specialization: Some(layer as u32),
             };
-            *slot = create_pipeline(&device, &config, device.render_pass)?;
+            *slot = create_pipeline(&device, &config, device.scene_pass)?;
         }
 
+        // Water mixes in the scene behind it itself, so it needs no blending.
+        // It writes depth only so the nearest of two water faces wins.
+        let water_config = PipelineConfig {
+            vs_bytes: block_vs,
+            fs_bytes: include_bytes!(concat!(env!("OUT_DIR"), "/water.frag.spv")),
+            vertex_bindings: chunk_binding.clone(),
+            vertex_attributes: block_attributes,
+            push_constant_size: CHUNK_PUSH_SIZE,
+            depth_test: true,
+            depth_write: true,
+            blend: false,
+            cull_back: false,
+            depth_only: false,
+            color_attachments: 1,
+            descriptor_layouts: vec![frame_set_layout],
+            specialization: None,
+        };
+        let water_pipeline = create_pipeline(&device, &water_config, device.final_pass)?;
+
         let mut shadow_pipelines =
-            [(vk::Pipeline::null(), vk::PipelineLayout::null()); SHADOW_LAYERS];
+            [(vk::Pipeline::null(), vk::PipelineLayout::null()); SOLID_LAYERS];
         for (layer, slot) in shadow_pipelines.iter_mut().enumerate() {
             let config = PipelineConfig {
                 vs_bytes: include_bytes!(concat!(env!("OUT_DIR"), "/shadow.vert.spv")),
@@ -192,15 +229,17 @@ impl Renderer {
                 blend: false,
                 cull_back: false,
                 depth_only: true,
+                color_attachments: 0,
                 descriptor_layouts: vec![frame_set_layout],
                 specialization: Some(layer as u32),
             };
             *slot = create_pipeline(&device, &config, shadow.render_pass)?;
         }
 
-        let sky_config = PipelineConfig {
+        // The sky and the scene copy are both a fullscreen triangle.
+        let fullscreen = |fs_bytes, color_attachments| PipelineConfig {
             vs_bytes: include_bytes!(concat!(env!("OUT_DIR"), "/sky.vert.spv")),
-            fs_bytes: include_bytes!(concat!(env!("OUT_DIR"), "/sky.frag.spv")),
+            fs_bytes,
             vertex_bindings: vec![],
             vertex_attributes: vec![],
             push_constant_size: 0,
@@ -209,11 +248,18 @@ impl Renderer {
             blend: false,
             cull_back: false,
             depth_only: false,
+            color_attachments,
             descriptor_layouts: vec![frame_set_layout],
             specialization: None,
         };
+        let sky_config = fullscreen(include_bytes!(concat!(env!("OUT_DIR"), "/sky.frag.spv")), 2);
         let (sky_pipeline, sky_pipeline_layout) =
-            create_pipeline(&device, &sky_config, device.render_pass)?;
+            create_pipeline(&device, &sky_config, device.scene_pass)?;
+        let composite_config = fullscreen(
+            include_bytes!(concat!(env!("OUT_DIR"), "/composite.frag.spv")),
+            1,
+        );
+        let composite_pipeline = create_pipeline(&device, &composite_config, device.final_pass)?;
 
         let hud_config = PipelineConfig {
             vs_bytes: include_bytes!(concat!(env!("OUT_DIR"), "/hud.vert.spv")),
@@ -241,11 +287,12 @@ impl Renderer {
             blend: true,
             cull_back: false,
             depth_only: false,
+            color_attachments: 1,
             descriptor_layouts: vec![hud_set_layout],
             specialization: None,
         };
         let (hud_pipeline, hud_pipeline_layout) =
-            create_pipeline(&device, &hud_config, device.render_pass)?;
+            create_pipeline(&device, &hud_config, device.final_pass)?;
 
         let atlas = font::build_atlas();
         let hud_texture = Texture::new(
@@ -301,7 +348,7 @@ impl Renderer {
                 .descriptor_count(frames_in_flight),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(2 * frames_in_flight + 1),
+                .descriptor_count(4 * frames_in_flight + 1),
         ];
         let descriptor_pool = device
             .device
@@ -368,6 +415,32 @@ impl Renderer {
         }
         device.device.update_descriptor_sets(&writes, &[]);
 
+        let mut scene_samplers = [vk::Sampler::null(); 2];
+        let infos = [
+            sampler_info(vk::Filter::LINEAR, vk::SamplerMipmapMode::NEAREST, 0.0)
+                .mag_filter(vk::Filter::LINEAR),
+            sampler_info(vk::Filter::NEAREST, vk::SamplerMipmapMode::NEAREST, 0.0),
+        ];
+        for (sampler, info) in scene_samplers.iter_mut().zip(&infos) {
+            *sampler = device
+                .device
+                .create_sampler(info, None)
+                .map_err(|e| VkError::new("create_sampler", e))?;
+        }
+        write_scene_sets(
+            &device,
+            &frame_sets,
+            swapchain.scene_views(),
+            scene_samplers,
+        );
+
+        // A ray march for every water pixel is too slow for virtual and
+        // CPU devices. Their water reflects only the sky.
+        let reflections = matches!(
+            device.properties.device_type,
+            vk::PhysicalDeviceType::DISCRETE_GPU | vk::PhysicalDeviceType::INTEGRATED_GPU
+        );
+
         let pool_info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(device.queue_family)
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
@@ -406,10 +479,14 @@ impl Renderer {
             shadow,
             block_pipelines,
             shadow_pipelines,
+            water_pipeline,
+            composite_pipeline,
             sky_pipeline,
             sky_pipeline_layout,
             hud_pipeline,
             hud_pipeline_layout,
+            scene_samplers,
+            reflections,
             frame_set_layout,
             hud_set_layout,
             descriptor_pool,
@@ -451,8 +528,22 @@ impl Renderer {
         if self.width == 0 || self.height == 0 {
             return Ok(());
         }
-        self.swapchain
-            .recreate(&self.device, self.width, self.height)
+        // The scene images are new, so the sets that read them must follow.
+        // A rebuild waits for the device to go idle, so no frame uses them.
+        if self
+            .swapchain
+            .recreate(&self.device, self.width, self.height)?
+        {
+            unsafe {
+                write_scene_sets(
+                    &self.device,
+                    &self.frame_sets,
+                    self.swapchain.scene_views(),
+                    self.scene_samplers,
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Draw one frame.
@@ -498,6 +589,7 @@ impl Renderer {
                 view,
                 &shadow_matrix,
                 self.shadow.texel(),
+                self.reflections,
             ));
             self.upload_hud(frame, hud_lines);
 
@@ -592,16 +684,22 @@ impl Renderer {
                 float32: [0.0, 0.0, 0.0, 1.0],
             },
         };
+        // The depth copy starts out as far away as the depth buffer.
+        let far = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [1.0, 0.0, 0.0, 0.0],
+            },
+        };
         let depth = vk::ClearValue {
             depth_stencil: vk::ClearDepthStencilValue {
                 depth: 1.0,
                 stencil: 0,
             },
         };
-        // One value per render pass attachment, in the same order. The MSAA
-        // resolve target is never cleared but still takes a slot.
-        let msaa_clears = [color, color, depth];
-        let single_clears = [color, depth];
+        // One value per scene pass attachment, in the same order. The MSAA
+        // resolve targets are never cleared but still take a slot.
+        let msaa_clears = [color, far, color, far, depth];
+        let single_clears = [color, far, depth];
         let clears: &[vk::ClearValue] = if device.msaa_samples == vk::SampleCountFlags::TYPE_1 {
             &single_clears
         } else {
@@ -611,12 +709,13 @@ impl Renderer {
         let extent = self.swapchain.extent;
         let render_area = vk::Rect2D::default().extent(extent);
         let info = vk::RenderPassBeginInfo::default()
-            .render_pass(device.render_pass)
-            .framebuffer(self.swapchain.framebuffers[image_index])
+            .render_pass(device.scene_pass)
+            .framebuffer(self.swapchain.scene_framebuffer)
             .render_area(render_area)
             .clear_values(clears);
         d.cmd_begin_render_pass(cmd, &info, vk::SubpassContents::INLINE);
 
+        // Both passes draw at the swapchain size.
         let viewport = vk::Viewport::default()
             .width(extent.width as f32)
             .height(extent.height as f32)
@@ -637,28 +736,57 @@ impl Renderer {
         );
         d.cmd_draw(cmd, 3, 1, 0, 0);
 
-        if has_geometry {
-            let visible = self.chunks.visible(view.camera, &view.view_projection);
-            for (layer, &(pipeline, layout)) in self.block_pipelines.iter().enumerate() {
-                d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
-                d.cmd_bind_descriptor_sets(
-                    cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    layout,
-                    0,
-                    &frame_set,
-                    &[],
-                );
-                // Solid layers go near to far so early depth testing skips
-                // hidden pixels; blended water goes far to near.
-                let chunks: Box<dyn Iterator<Item = &VisibleChunk>> = if layer == LAYERS - 1 {
-                    Box::new(visible.iter().rev())
-                } else {
-                    Box::new(visible.iter())
-                };
-                self.chunks.draw(device, cmd, layout, layer, chunks);
-            }
+        // Near to far, so early depth testing skips hidden pixels.
+        let visible = if has_geometry {
+            self.chunks.visible(view.camera, &view.view_projection)
+        } else {
+            Vec::new()
+        };
+        for (layer, &(pipeline, layout)) in self.block_pipelines.iter().enumerate() {
+            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            d.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                layout,
+                0,
+                &frame_set,
+                &[],
+            );
+            self.chunks.draw(device, cmd, layout, layer, visible.iter());
         }
+        d.cmd_end_render_pass(cmd);
+
+        // Every attachment of the final pass is loaded or overwritten.
+        let info = vk::RenderPassBeginInfo::default()
+            .render_pass(device.final_pass)
+            .framebuffer(self.swapchain.framebuffers[image_index])
+            .render_area(render_area);
+        d.cmd_begin_render_pass(cmd, &info, vk::SubpassContents::INLINE);
+
+        let (pipeline, layout) = self.composite_pipeline;
+        d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+        d.cmd_bind_descriptor_sets(
+            cmd,
+            vk::PipelineBindPoint::GRAPHICS,
+            layout,
+            0,
+            &frame_set,
+            &[],
+        );
+        d.cmd_draw(cmd, 3, 1, 0, 0);
+
+        let (pipeline, layout) = self.water_pipeline;
+        d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+        d.cmd_bind_descriptor_sets(
+            cmd,
+            vk::PipelineBindPoint::GRAPHICS,
+            layout,
+            0,
+            &frame_set,
+            &[],
+        );
+        self.chunks
+            .draw(device, cmd, layout, LAYERS - 1, visible.iter());
 
         // HUD last, blended over everything else.
         if self.hud_vertex_count > 0 {
@@ -716,11 +844,16 @@ impl Drop for Renderer {
             self.block_texture.destroy(&self.device);
             self.hud_texture.destroy(&self.device);
 
+            for sampler in self.scene_samplers {
+                device.destroy_sampler(sampler, None);
+            }
             device.destroy_descriptor_pool(self.descriptor_pool, None);
             device.destroy_descriptor_set_layout(self.frame_set_layout, None);
             device.destroy_descriptor_set_layout(self.hud_set_layout, None);
 
             let others = [
+                self.water_pipeline,
+                self.composite_pipeline,
                 (self.sky_pipeline, self.sky_pipeline_layout),
                 (self.hud_pipeline, self.hud_pipeline_layout),
             ];
@@ -745,21 +878,63 @@ impl Drop for Renderer {
 /// The `Frame` uniform block from common.glsl, laid out by std140 rules:
 /// view-projection, its inverse and the shadow matrix, then the camera
 /// position with the time, the sun direction with the shadow texel size,
-/// and the fog distances with the underwater flag.
-fn frame_uniforms(view: &FrameView, shadow_matrix: &Mat4, shadow_texel: f32) -> Vec<u8> {
+/// and the fog distances with the underwater and reflection flags.
+fn frame_uniforms(
+    view: &FrameView,
+    shadow_matrix: &Mat4,
+    shadow_texel: f32,
+    reflections: bool,
+) -> Vec<u8> {
     let sun = sun_direction();
     let camera = view.camera;
-    let underwater = if view.underwater { 1.0 } else { 0.0 };
+    let flag = |on: bool| if on { 1.0 } else { 0.0 };
     let floats: Vec<f32> = [
         view.view_projection.to_cols_array().as_slice(),
         view.view_projection.inverse().to_cols_array().as_slice(),
         shadow_matrix.to_cols_array().as_slice(),
         &[camera.x, camera.y, camera.z, view.time],
         &[sun.x, sun.y, sun.z, shadow_texel],
-        &[view.fog_end * FOG_START, view.fog_end, underwater, 0.0],
+        &[
+            view.fog_end * FOG_START,
+            view.fog_end,
+            flag(view.underwater),
+            flag(reflections),
+        ],
     ]
     .concat();
     bytemuck::cast_slice(&floats).to_vec()
+}
+
+/// Point bindings 3 and 4 of every frame set at the scene's colour and
+/// depth.
+///
+/// # Safety
+/// No submitted frame may still be using the sets.
+unsafe fn write_scene_sets(
+    device: &Device,
+    sets: &[vk::DescriptorSet],
+    views: [vk::ImageView; 2],
+    samplers: [vk::Sampler; 2],
+) {
+    let infos = [0, 1].map(|i| {
+        [vk::DescriptorImageInfo::default()
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .image_view(views[i])
+            .sampler(samplers[i])]
+    });
+    let writes: Vec<_> = sets
+        .iter()
+        .flat_map(|&set| {
+            infos.iter().zip(3..).map(move |(info, binding)| {
+                vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(binding)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(info)
+            })
+        })
+        .collect();
+    device.device.update_descriptor_sets(&writes, &[]);
 }
 
 fn sampler_info(
@@ -840,7 +1015,7 @@ mod tests {
             time: 7.0,
             underwater: true,
         };
-        let bytes = frame_uniforms(&view, &Mat4::IDENTITY, 0.5);
+        let bytes = frame_uniforms(&view, &Mat4::IDENTITY, 0.5, true);
         assert_eq!(bytes.len(), FRAME_UNIFORM_SIZE);
         let float =
             |offset: usize| f32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap());
@@ -853,5 +1028,6 @@ mod tests {
         assert!((float(224) - 100.0 * FOG_START).abs() < 1e-4, "fog start");
         assert_eq!(float(228), 100.0, "fog end");
         assert_eq!(float(232), 1.0, "underwater flag in fog.z");
+        assert_eq!(float(236), 1.0, "reflection flag in fog.w");
     }
 }

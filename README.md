@@ -62,7 +62,7 @@ Block textures are PNG files in `assets/textures/blocks/`, one per name in `gobl
 
 GLSL lives in `shaders/vulkan/` and is compiled by `crates/render/build.rs` into `${OUT_DIR}` with `glslc`, then embedded in the binary. The shaders target Vulkan 1.0, so the output is SPIR-V 1.0. Debug builds turn on the validation layer when it is installed and print its messages to stderr.
 
-Lighting is done in linear HDR and tone mapped at the end: sunlight with soft shadows from a sun shadow map, sky and ground light dimmed by ambient occlusion, a scattering sky with a sun disc, and fog that takes the colour of the sky behind the terrain. Water has moving waves, reflects the sky more at grazing angles, and catches the sun. Under water, the view fades into murky blue-green.
+Lighting is done in linear HDR and tone mapped at the end: sunlight with soft shadows from a sun shadow map, sky and ground light dimmed by ambient occlusion, a scattering sky with a sun disc, and fog that takes the colour of the sky behind the terrain. Water is drawn after the rest of the scene and reads it back: the floor shows through with ripples bending it, fading with the depth of water in between, and the surface reflects the terrain with screen-space reflections, falling back to the sky where the reflected ray leaves the screen. It reflects more at grazing angles and catches the sun. Under water, the view fades into murky blue-green.
 
 ## Hardware support
 
@@ -77,6 +77,7 @@ The renderer uses Vulkan 1.0 core plus `VK_KHR_surface` and `VK_KHR_swapchain`, 
 | Opaque composite alpha | Whatever the surface supports                             |
 | Validation layer       | Skipped, with a note on stderr                            |
 | Sun shadows            | 2048 px on discrete, 1024 px on integrated GPUs, else off |
+| Water reflections      | Sky only on virtual and software devices                  |
 
 Discrete GPUs are preferred, but integrated, virtual and software devices are accepted too.
 
@@ -105,4 +106,4 @@ Vulkan is not available on every Android device. Devices without a Vulkan 1.0 dr
 
 MIT. See [LICENSE](LICENSE). Copyright (c) 2024 Achmad Daniel Syahputra.
 
-The biome rules are adapted from terrain-diffusion-mc, also MIT; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+The biome rules are adapted from terrain-diffusion-mc, also MIT. The water's screen-space ray march is adapted from the Revelation shader pack under the Apache License 2.0. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
