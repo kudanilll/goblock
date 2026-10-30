@@ -95,10 +95,11 @@ impl Texture {
             Texture::LogSide => [104, 80, 50, 255],
             Texture::LogTop => [160, 128, 84, 255],
             Texture::Leaves => [60, 120, 48, 230],
+            // A missing grass sprite stays invisible instead of a solid card.
             Texture::GrassTuft
             | Texture::GrassTuftShort
             | Texture::GrassTuftTall
-            | Texture::GrassTuftSeeds => [118, 158, 72, 255],
+            | Texture::GrassTuftSeeds => [118, 158, 72, 0],
         }
     }
 }

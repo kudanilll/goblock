@@ -50,7 +50,7 @@ const AO_LEVELS: [u8; 4] = [115, 166, 209, 255];
 /// Texture coordinates for the four corners returned by [`corners`].
 const UVS: [[u8; 2]; 4] = [[0, 1], [1, 1], [1, 0], [0, 0]];
 /// Height of a water surface, in sixteenths of a block.
-const WATER_SURFACE: i32 = 14;
+pub(crate) const WATER_SURFACE: i32 = 14;
 
 /// Corners of a face in counter-clockwise order seen from outside, starting
 /// at the bottom-left of the texture.

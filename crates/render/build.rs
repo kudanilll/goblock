@@ -75,10 +75,12 @@ fn main() {
     ];
 
     // Shared code that the shaders pull in with #include.
-    println!(
-        "cargo:rerun-if-changed={}",
-        shader_dir.join("common.glsl").display()
-    );
+    for include in ["common.glsl", "scene.glsl"] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            shader_dir.join(include).display()
+        );
+    }
 
     for name in shaders {
         let input = shader_dir.join(name);

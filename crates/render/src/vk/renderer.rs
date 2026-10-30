@@ -1044,4 +1044,44 @@ mod tests {
             [0.0, -1.5, 0.0, 1.8]
         );
     }
+
+    #[test]
+    fn common_shader_declares_caustics_helper() {
+        let src = include_str!("../../../../shaders/vulkan/common.glsl");
+        assert!(src.contains("float caustics(vec2 worldXz, float time)"));
+    }
+
+    #[test]
+    fn composite_shader_includes_common_definitions() {
+        let src = include_str!("../../../../shaders/vulkan/composite.frag");
+        assert!(src.contains("#include \"common.glsl\""));
+    }
+
+    #[test]
+    fn underwater_godrays_bounds_upward_rays_to_water_surface() {
+        let src = include_str!("../../../../shaders/vulkan/common.glsl");
+        assert!(src.contains("toSurface"));
+    }
+
+    #[test]
+    fn shader_water_level_matches_the_mesh() {
+        let src = include_str!("../../../../shaders/vulkan/common.glsl");
+        let level: f32 = src
+            .lines()
+            .find_map(|line| line.strip_prefix("const float WATER_LEVEL = "))
+            .expect("shared water surface level")
+            .trim_end_matches(';')
+            .parse()
+            .unwrap();
+        let mut chunk = goblock_world::Chunk::new(glam::IVec2::ZERO);
+        chunk.set(
+            0,
+            goblock_world::SEA_LEVEL,
+            0,
+            goblock_world::BlockId::Water,
+        );
+        let mesh = goblock_world::mesh::build_mesh([&chunk; 9]);
+        let mesh_top = mesh.vertices.iter().map(|v| v.position[1]).max().unwrap();
+        assert_eq!(level, mesh_top as f32 / 16.0);
+    }
 }

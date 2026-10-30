@@ -36,6 +36,12 @@ void main() {
     // Faces turned away from the sun are in their own shadow anyway.
     float lit = dot(normal, sun) > 0.0 ? sunlight(vShadow) : 0.0;
     float direct = max(dot(normal, sun), 0.0) * lit;
+    vec3 world = frame.cameraPosition.xyz + vView;
+    if (world.y < WATER_LEVEL && normal.y > -0.2) {
+        float depthFade = exp(-(WATER_LEVEL - world.y) * 0.35);
+        float c = caustics(world.xz, frame.cameraPosition.w) * depthFade;
+        direct += direct * c * 0.35;
+    }
     // Sky light arrives from above and light bounced off the ground from
     // below. Ambient occlusion only dims this indirect part.
     vec3 ambient = mix(GROUND_BOUNCE, SKY_AMBIENT, normal.y * 0.5 + 0.5) * vOcclusion;

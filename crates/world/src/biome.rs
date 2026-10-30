@@ -346,12 +346,12 @@ impl Biome {
     /// Chance of a grass tuft on an open grassy column.
     pub(crate) fn grass_density(self) -> f32 {
         match self {
-            Biome::Plains => 0.45,
-            Biome::Savanna | Biome::Jungle => 0.5,
-            Biome::Woodland | Biome::Swamp => 0.3,
-            Biome::Forest | Biome::Shrubland => 0.2,
-            Biome::Highlands | Biome::SparseTaiga => 0.12,
-            Biome::Taiga => 0.08,
+            Biome::Plains => 0.78,
+            Biome::Savanna | Biome::Jungle => 0.72,
+            Biome::Woodland | Biome::Swamp => 0.65,
+            Biome::Forest | Biome::Shrubland => 0.55,
+            Biome::Highlands | Biome::SparseTaiga => 0.35,
+            Biome::Taiga => 0.25,
             _ => 0.0,
         }
     }
@@ -454,5 +454,12 @@ mod tests {
         assert_eq!(Biome::Desert.tree_density(), 0.0);
         assert_eq!(Biome::RockyPeaks.tree_density(), 0.0);
         assert!(Biome::Forest.tree_density() > 0.5);
+    }
+
+    #[test]
+    fn grassy_biomes_have_dense_vegetation() {
+        assert!(Biome::Plains.grass_density() >= 0.7);
+        assert!(Biome::Woodland.grass_density() >= 0.6);
+        assert!(Biome::Forest.grass_density() >= 0.5);
     }
 }

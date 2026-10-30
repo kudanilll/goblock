@@ -3,3 +3,7 @@ build/
 
 # Rust
 target/
+
+# Superpowes
+.superpowers
+docs/superpowers/

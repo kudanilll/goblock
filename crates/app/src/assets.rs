@@ -48,9 +48,6 @@ pub fn load_block_textures() -> LoadedTextures {
             });
         match image {
             Some(image) => pixels.extend(resample(&image, TILE_SIZE)),
-            None if Texture::GRASS_TUFTS.contains(&texture) => {
-                pixels.extend(grass_tuft(texture, TILE_SIZE));
-            }
             None => {
                 missing.push(texture.name());
                 pixels.extend(placeholder(texture, TILE_SIZE));
@@ -178,117 +175,6 @@ fn placeholder(texture: Texture, size: u32) -> Vec<u8> {
     out
 }
 
-/// Grass tuft sprites are pixel art on a grid this many cells across. At the
-/// 64-texel tile size a cell is 2x2 texels, about the detail of the block
-/// textures.
-const TUFT_GRID: usize = 32;
-
-/// Tuft greens in sRGB, from the roots to the tips.
-const TUFT_GREENS: [[u8; 3]; 5] = [
-    [52, 88, 40],
-    [68, 110, 46],
-    [88, 134, 52],
-    [108, 154, 58],
-    [134, 178, 68],
-];
-
-/// The dark and light shade of a seed head, sRGB.
-const TUFT_SEEDS: [[u8; 3]; 2] = [[166, 148, 86], [204, 190, 112]];
-
-/// The built-in sprite of a grass tuft texture, rooted along the bottom
-/// edge. Each blade is a root column, a height in cells and how many cells
-/// its tip leans to the side. The lean grows with the square of the height,
-/// so a blade rises straight and arcs over near its tip. In the seeded tuft,
-/// stems taller than 20 cells end in a seed head.
-fn grass_tuft(texture: Texture, size: u32) -> Vec<u8> {
-    let blades: &[(i32, i32, i32)] = match texture {
-        Texture::GrassTuftShort => &[
-            (8, 7, -5),
-            (10, 9, -5),
-            (12, 12, -3),
-            (13, 8, -2),
-            (15, 13, 0),
-            (16, 10, 1),
-            (17, 11, 2),
-            (18, 9, 3),
-            (19, 12, 4),
-            (21, 8, 6),
-        ],
-        Texture::GrassTuftTall => &[
-            (8, 16, -6),
-            (10, 21, -6),
-            (12, 25, -4),
-            (13, 19, -2),
-            (14, 29, -1),
-            (16, 23, 1),
-            (17, 18, 2),
-            (18, 27, 4),
-            (20, 22, 6),
-            (22, 16, 7),
-        ],
-        Texture::GrassTuftSeeds => &[
-            (9, 11, -6),
-            (11, 13, -5),
-            (12, 10, -3),
-            (14, 26, -3),
-            (15, 14, 0),
-            (17, 23, 3),
-            (18, 11, 3),
-            (20, 13, 5),
-            (22, 10, 6),
-        ],
-        _ => &[
-            (8, 12, -6),
-            (10, 15, -5),
-            (12, 18, -4),
-            (13, 14, -2),
-            (14, 21, -1),
-            (16, 17, 1),
-            (17, 13, 2),
-            (18, 20, 3),
-            (20, 15, 5),
-            (22, 12, 6),
-        ],
-    };
-    let seeds = texture == Texture::GrassTuftSeeds;
-
-    let mut cells = [[None; TUFT_GRID]; TUFT_GRID];
-    for &(root, height, lean) in blades {
-        for i in 0..height {
-            let t = i as f32 / (height - 1) as f32;
-            let x = (root + (lean as f32 * t * t).round() as i32) as usize;
-            let y = TUFT_GRID - 1 - i as usize;
-            let shade = match i {
-                0 => 0,
-                _ if i == height - 1 => 4,
-                _ if t < 0.25 => 1,
-                _ if t < 0.6 => 2,
-                _ => 3,
-            };
-            cells[y][x] = Some(TUFT_GREENS[shade]);
-
-            // The head covers the top five cells of the stem in alternating
-            // shades, two cells wide below its tip.
-            let from_tip = (height - i) as usize;
-            if seeds && height > 20 && from_tip <= 5 {
-                cells[y][x] = Some(TUFT_SEEDS[from_tip % 2]);
-                if (2..=4).contains(&from_tip) {
-                    let side = if lean < 0 { x - 1 } else { x + 1 };
-                    cells[y][side] = Some(TUFT_SEEDS[(from_tip + 1) % 2]);
-                }
-            }
-        }
-    }
-
-    let cell = |texel: u32| texel as usize * TUFT_GRID / size as usize;
-    (0..size * size)
-        .flat_map(|i| match cells[cell(i / size)][cell(i % size)] {
-            Some([r, g, b]) => [r, g, b, 255],
-            None => [0; 4],
-        })
-        .collect()
-}
-
 fn hash(x: u32, y: u32, salt: u32) -> u32 {
     let mut h =
         x.wrapping_mul(0x8da6_b343) ^ y.wrapping_mul(0xd816_3841) ^ salt.wrapping_mul(0xcb1a_b31f);
@@ -392,32 +278,6 @@ mod tests {
             layer_bytes * Texture::ALL.len()
         );
         assert_eq!(loaded.textures.layers() as usize, Texture::ALL.len());
-    }
-
-    #[test]
-    fn grass_tufts_are_distinct_rooted_pixel_art() {
-        let tiles = Texture::GRASS_TUFTS.map(|texture| grass_tuft(texture, TILE_SIZE));
-        let cell = TILE_SIZE / TUFT_GRID as u32;
-        for tile in &tiles {
-            let texel = |x: u32, y: u32| {
-                let i = ((y * TILE_SIZE + x) * 4) as usize;
-                &tile[i..i + 4]
-            };
-            let opaque = |y: u32| (0..TILE_SIZE).filter(|&x| texel(x, y)[3] == 255).count();
-            assert!(
-                opaque(TILE_SIZE - 1) > 0,
-                "roots must reach the bottom edge"
-            );
-            assert_eq!(opaque(0), 0, "tips must not be cut off by the top edge");
-            for y in 0..TILE_SIZE {
-                for x in 0..TILE_SIZE {
-                    assert_eq!(texel(x, y), texel(x - x % cell, y - y % cell));
-                }
-            }
-        }
-        for (i, tile) in tiles.iter().enumerate() {
-            assert!(tiles[i + 1..].iter().all(|other| other != tile));
-        }
     }
 
     #[test]

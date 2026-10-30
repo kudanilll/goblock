@@ -58,7 +58,7 @@ The player is a 0.6 × 1.8 block body that walks under gravity and collides with
 
 ## Textures
 
-Block textures are PNG files in `assets/textures/blocks/`, one per name in `goblock_world::Texture` (`stone.png`, `grass_top.png`, `leaves.png` and so on). Any square size works; each one is scaled to 64×64 when the game starts. A missing file gets a placeholder colour and a note on stderr. The four grass tuft sprites are built in as 32×32 pixel art, and optional `grass_tuft.png`, `grass_tuft_short.png`, `grass_tuft_tall.png` and `grass_tuft_seeds.png` files replace them. A small PNG keeps hard pixel edges when it is scaled up, so a 32×32 or 64×64 drawing works best for these. `assets/textures/PROMPTS.md` has a prompt for every texture.
+Block textures are PNG files in `assets/textures/blocks/`, one per name in `goblock_world::Texture` (`stone.png`, `grass_top.png`, `leaves.png` and so on). The ones in the repository are 32×32 pixel art in muted, natural colours. Any square size works; each one is scaled to 64×64 when the game starts, and a small image keeps its hard pixel edges. The files look darker than the game shows them, because sunlight and the tone curve brighten a lit top face by about two times. A missing file gets a placeholder colour and a note on stderr. Grass tufts use four transparent sprites (`grass_tuft.png`, `grass_tuft_short.png`, `grass_tuft_tall.png` and `grass_tuft_seeds.png`), and a missing one leaves its tufts invisible. `assets/textures/PROMPTS.md` has a prompt for every texture.
 
 ## Shaders
 

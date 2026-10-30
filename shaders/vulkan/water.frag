@@ -9,11 +9,7 @@
 // THIRD-PARTY-NOTICES.md.
 
 #include "common.glsl"
-
-// The scene behind the water: tone-mapped colour, and depth as
-// gl_FragCoord.z with 1 where only sky shows.
-layout(set = 0, binding = 3) uniform sampler2D uSceneColor;
-layout(set = 0, binding = 4) uniform sampler2D uSceneDepth;
+#include "scene.glsl"
 
 layout(location = 1) in vec3 vTint;
 layout(location = 2) in vec3 vView;
@@ -22,31 +18,48 @@ layout(location = 5) flat in uint vFace;
 
 layout(location = 0) out vec4 outColor;
 
-// Colour that water scatters back toward the eye, before lighting.
-const vec3 WATER_COLOR = vec3(0.04, 0.22, 0.30);
-// How much of the light from the floor is lost per block travelled
-// through water.
-const float WATER_ABSORPTION = 0.55;
+// Natural, realistic water body scattering color.
+const vec3 WATER_COLOR = vec3(0.03, 0.08, 0.13);
+// How much light is absorbed per block travelled through water.
+const float WATER_ABSORPTION = 0.35;
 // A reflected ray is sampled this many times across the screen, then the
 // hit is narrowed down by halving the last step this many times.
 const int RAY_STEPS = 16;
-const int RAY_REFINE = 4;
+const int RAY_REFINE = 5;
 // Longest reflected ray, in blocks, and how close to the camera (in clip
 // w, past the 0.1 near plane) a ray coming back toward it may get.
 const float RAY_LENGTH = 512.0;
 const float RAY_NEAR = 0.2;
 
-// Surface normal of moving water: the slope of several crossing sine waves
-// at world position `p`. Far away the ripples flatten out, since they are
-// smaller than a pixel there and would only shimmer.
+// Fluid, natural wave normals without repetitive planar banding.
+// Far away the ripples flatten smoothly so the horizon stays calm without shimmering.
 vec3 waveNormal(vec2 p, float time, float distance) {
     vec2 slope = vec2(0.0);
-    slope += vec2(0.8, 0.6) * cos(dot(p, vec2(0.8, 0.6)) * 0.9 + time * 1.3) * 0.05;
-    slope += vec2(-0.5, 0.86) * cos(dot(p, vec2(-0.5, 0.86)) * 1.7 + time * 1.9) * 0.04;
-    slope += vec2(0.3, -0.95) * cos(dot(p, vec2(0.3, -0.95)) * 3.1 + time * 2.7) * 0.03;
-    slope += vec2(-0.9, -0.42) * cos(dot(p, vec2(-0.9, -0.42)) * 5.3 + time * 3.6) * 0.02;
-    slope += vec2(0.62, -0.78) * cos(dot(p, vec2(0.62, -0.78)) * 8.9 + time * 4.8) * 0.012;
-    slope *= mix(1.0, 0.25, smoothstep(20.0, 140.0, distance));
+    // Large wind swell with gentle domain curve to prevent repeating grid lines
+    vec2 pWarp = p + vec2(sin(p.y * 0.15 + time * 0.6), cos(p.x * 0.15 + time * 0.5)) * 0.8;
+
+    vec2 d1 = vec2(0.78, 0.62);
+    float ph1 = dot(pWarp, d1) * 0.75 + time * 1.3;
+    slope += d1 * cos(ph1) * 0.045;
+
+    vec2 d2 = vec2(-0.65, 0.76);
+    float ph2 = dot(p, d2) * 1.35 + time * 1.7;
+    slope += d2 * cos(ph2) * 0.035;
+
+    vec2 d3 = vec2(0.38, -0.92);
+    float ph3 = dot(pWarp, d3) * 2.6 + time * 2.4;
+    slope += d3 * cos(ph3) * 0.025;
+
+    vec2 d4 = vec2(-0.85, -0.53);
+    float ph4 = dot(p, d4) * 4.8 + time * 3.2;
+    slope += d4 * cos(ph4) * 0.016;
+
+    vec2 d5 = vec2(0.58, -0.81);
+    float ph5 = dot(pWarp, d5) * 8.2 + time * 4.2;
+    slope += d5 * cos(ph5) * 0.008;
+
+    // Smoothly flatten far waves to zero to prevent horizon shimmering and striped noise
+    slope *= 1.0 - smoothstep(12.0, 80.0, distance);
     return normalize(vec3(-slope.x, 1.0, -slope.y));
 }
 
@@ -56,16 +69,15 @@ vec3 toScreen(vec4 clip) {
     return vec3(clip.xy / clip.w * 0.5 + 0.5, clip.z / clip.w);
 }
 
-float sceneDepth(vec2 uv) {
-    return textureLod(uSceneDepth, uv, 0.0).r;
-}
-
 // Follows a ray from camera-relative `origin` in direction `dir` across the
 // screen until it passes behind the scene. Returns the uv of the hit in xy
 // and how far to trust it in z, which is 0 for a miss.
-vec3 traceReflection(vec3 origin, vec3 dir, float jitter) {
+vec3 traceReflection(vec3 origin, vec3 dir, float side) {
     vec4 start = frame.viewProjection * vec4(origin, 1.0);
     vec4 toward = frame.viewProjection * vec4(dir, 0.0);
+    if (start.w <= RAY_NEAR) {
+        return vec3(0.0);
+    }
     // Clip w is the distance in front of the camera. A ray turning back
     // toward the camera has to end before it crosses the near plane.
     float len = RAY_LENGTH;
@@ -80,20 +92,14 @@ vec3 traceReflection(vec3 origin, vec3 dir, float jitter) {
     vec2 room = (step(0.0, safe) - a.xy) / safe;
     delta *= clamp(min(room.x, room.y), 0.0, 1.0);
 
-    // Each pixel starts its steps at a different offset, which turns the
-    // banding of coarse steps into fine noise.
     float before = 0.0;
+    float previousGap = viewDepth(a.z) - viewDepth(sceneDepth(a.xy));
     for (int i = 1; i <= RAY_STEPS; i++) {
-        float t = (float(i) - jitter) / float(RAY_STEPS);
+        float t = float(i) / float(RAY_STEPS);
         vec3 p = a + delta * t;
         float scene = sceneDepth(p.xy);
-        if (p.z > scene) {
-            // The surface has to lie between this step and the last one.
-            // Otherwise the ray only passed behind something in front.
-            if (scene < a.z + delta.z * before) {
-                before = t;
-                continue;
-            }
+        float gap = viewDepth(p.z) - viewDepth(scene);
+        if (scene < 1.0 && gap > 0.0 && previousGap <= 0.0) {
             float lo = before;
             float hi = t;
             for (int j = 0; j < RAY_REFINE; j++) {
@@ -106,11 +112,23 @@ vec3 traceReflection(vec3 origin, vec3 dir, float jitter) {
                 }
             }
             vec2 uv = a.xy + delta.xy * hi;
-            // Fade out near the edges, where the reflected scene runs out.
-            vec2 edge = min(uv, 1.0 - uv);
-            return vec3(uv, smoothstep(0.0, 0.08, min(edge.x, edge.y)));
+            float depth = sceneDepth(uv);
+            vec3 hitPoint = scenePosition(uv, depth);
+            vec3 rayPoint = scenePosition(uv, a.z + delta.z * hi);
+            // A crossing at a silhouette is not necessarily a ray hit.
+            float tolerance = 0.15 + 0.002 * length(hitPoint);
+            float confidence = 1.0 - smoothstep(0.0, tolerance, length(hitPoint - rayPoint));
+            if (depth >= 1.0 || side * (hitPoint.y - origin.y) < 0.0
+                || dot(hitPoint - origin, dir) < 0.2) {
+                return vec3(0.0);
+            }
+            confidence *= sceneContinuity(uv);
+            vec2 edge = min(uv, 1.0 - uv) * vec2(textureSize(uSceneDepth, 0));
+            confidence *= smoothstep(1.0, 8.0, min(edge.x, edge.y));
+            return vec3(sceneUv(uv), confidence);
         }
         before = t;
+        previousGap = gap;
     }
     return vec3(0.0);
 }
@@ -127,31 +145,53 @@ void main() {
     // Faces turned away from the sun are in their own shadow anyway.
     float lit = dot(faceNormal, sun) > 0.0 ? sunlight(vShadow) : 0.0;
 
-    // Seen from below, the surface faces the other way.
-    bool fromBelow = dot(viewDir, normal) > 0.0;
+    // The mesh determines which medium the ray leaves, even at grazing angles.
+    bool fromBelow = dot(viewDir, faceNormal) > 0.0;
+    float grazing = smoothstep(0.0, 0.15, abs(dot(viewDir, faceNormal)));
+    normal = normalize(mix(faceNormal, normal, grazing));
     vec3 n = fromBelow ? -normal : normal;
-    float facing = max(dot(-viewDir, n), 0.0);
-    // The flatter the view, the more the surface reflects (Schlick's
-    // approximation of the Fresnel term, for water's index of 1.33).
-    float fresnel = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
+    float facing = clamp(dot(-viewDir, n), 0.0, 1.0);
 
-    // The ripples bend the view of what lies below. A bent lookup that lands
-    // on something in front of the water falls back to the straight one.
+    // Fresnel reflectance. From below, total internal reflection occurs outside
+    // Snell's window (critical angle ~48.6 degrees).
+    float eta = fromBelow ? 1.333 : 1.0 / 1.333;
+    float sin2 = eta * eta * (1.0 - facing * facing);
+    float fresnel = 1.0;
+    if (sin2 < 1.0) {
+        float transmittedCos = sqrt(1.0 - sin2);
+        float rs = (eta * facing - transmittedCos) / max(eta * facing + transmittedCos, 1e-4);
+        float rp = (facing - eta * transmittedCos) / max(facing + eta * transmittedCos, 1e-4);
+        fresnel = 0.5 * (rs * rs + rp * rp);
+    }
+
+    // The ripples bend the view of what lies below.
+    // Refraction fades out with distance so far water never shifts across the horizon.
     vec2 screen = gl_FragCoord.xy / vec2(textureSize(uSceneColor, 0));
-    vec2 bent = screen + (normal.xz - faceNormal.xz) * 0.04;
+    float refrFade = 1.0 - smoothstep(5.0, 35.0, distance);
+    vec4 surfaceClip = frame.viewProjection * vec4(vView, 1.0);
+    float straightDepth = sceneDepth(screen);
+    float gap = max(viewDepth(straightDepth) - surfaceClip.w, 0.0);
+    vec4 projectedSlope = frame.viewProjection * vec4(normal - faceNormal, 0.0);
+    vec2 offset = projectedSlope.xy * (0.15 * refrFade / max(surfaceClip.w, 1.0));
+    offset *= smoothstep(0.0, 0.5, gap);
+    if (frame.fog.z > 0.5) {
+        offset += underwaterRipple(screen);
+    }
+    vec2 bent = sceneUv(screen + offset * sceneContinuity(screen));
     float floorDepth = sceneDepth(bent);
-    if (floorDepth < gl_FragCoord.z) {
-        bent = screen;
-        floorDepth = sceneDepth(screen);
+    // If the bent lookup lands on something in front of the water or crosses onto the sky,
+    // fall back to the straight screen coordinate.
+    if (viewDepth(floorDepth) <= surfaceClip.w || (floorDepth >= 1.0 && straightDepth < 1.0)) {
+        bent = sceneUv(screen);
+        floorDepth = straightDepth;
     }
     vec3 behind = textureLod(uSceneColor, bent, 0.0).rgb;
 
     // Light from the floor fades with the distance it travels through the
     // water (Beer-Lambert), so shallow water is clear and deep water shows
-    // only its own colour. From below, that water lies behind the camera
-    // and the underwater fog covers it.
-    vec4 floorPoint = frame.inverseViewProjection * vec4(bent * 2.0 - 1.0, floorDepth, 1.0);
-    float thickness = max(length(floorPoint.xyz / floorPoint.w) - distance, 0.0);
+    // its own scattered tone.
+    vec3 floorPoint = scenePosition(bent, floorDepth);
+    float thickness = floorDepth >= 1.0 ? 32.0 : max(length(floorPoint) - distance, 0.0);
     float transmit = fromBelow ? 1.0 : exp(-WATER_ABSORPTION * thickness);
     vec3 scatter = WATER_COLOR * vTint
         * (SKY_AMBIENT + SUN_COLOR * max(sun.y, 0.0) * 0.3 * lit);
@@ -161,12 +201,21 @@ void main() {
         ? WATER_FOG
         : skyColor(reflected) + SUN_COLOR * 8.0 * pow(max(dot(reflected, sun), 0.0), 600.0) * lit);
     if (!fromBelow && frame.fog.w > 0.5) {
-        // Rays are kept above the surface, which would hide anything below.
-        vec3 ray = normalize(vec3(reflected.x, max(reflected.y, 0.02), reflected.z));
-        // Interleaved gradient noise (Jorge Jimenez) for the step offset.
-        float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
-        vec3 hit = traceReflection(vView, ray, jitter);
+        vec3 hit = reflected.y > 0.0
+            ? traceReflection(vView + faceNormal * 0.05, reflected, 1.0)
+            : vec3(0.0);
         reflection = mix(reflection, textureLod(uSceneColor, hit.xy, 0.0).rgb, hit.z);
+    }
+
+    if (fromBelow) {
+        vec3 transmitted = refract(viewDir, n, eta);
+        vec3 outside = tonemap(skyColor(transmitted)
+            + SUN_COLOR * 20.0 * smoothstep(0.9995, 0.9998, dot(transmitted, sun)));
+        float surfaceY = frame.cameraPosition.y + vView.y;
+        // Only geometry on the air side belongs in the transmitted view.
+        if (floorDepth >= 1.0 || frame.cameraPosition.y + floorPoint.y < surfaceY) {
+            behind = outside;
+        }
     }
 
     // The scene is already tone mapped, so everything is mixed in display
@@ -174,6 +223,12 @@ void main() {
     vec3 color = mix(behind, tonemap(scatter), 1.0 - transmit);
     color = mix(color, reflection, fresnel);
 
-    vec4 fog = fogBetween(viewDir, distance);
-    outColor = vec4(mix(color, tonemap(fog.rgb), fog.a), 1.0);
+    vec3 finalColor;
+    if (frame.fog.z > 0.5) {
+        finalColor = underwaterColor(color, viewDir, distance, 0.5);
+    } else {
+        vec4 fog = fogBetween(viewDir, distance);
+        finalColor = mix(color, tonemap(fog.rgb), fog.a);
+    }
+    outColor = vec4(finalColor, 1.0);
 }

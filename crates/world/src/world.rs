@@ -134,6 +134,14 @@ impl World {
         self.block_at(point.floor().as_ivec3()).is_solid()
     }
 
+    /// Whether `point` lies below the rendered surface of loaded water.
+    pub fn is_underwater(&self, point: Vec3) -> bool {
+        let cell = point.floor().as_ivec3();
+        self.block_at(cell) == BlockId::Water
+            && (self.block_at(cell + IVec3::Y) == BlockId::Water
+                || point.y - (cell.y as f32) < crate::mesh::WATER_SURFACE as f32 / 16.0)
+    }
+
     pub fn biome_at(&self, x: i32, z: i32) -> Biome {
         self.terrain.sample(x, z).biome
     }
@@ -335,5 +343,20 @@ mod tests {
         let world = World::new(1, 1).unwrap();
         assert!(!world.is_loaded(0, 0));
         assert_eq!(world.block_at(IVec3::new(0, 10, 0)), BlockId::Air);
+    }
+
+    #[test]
+    fn underwater_detection_matches_the_water_mesh() {
+        let mut world = World::new(1, 1).unwrap();
+        let mut chunk = Chunk::new(IVec2::new(-1, -1));
+        chunk.set(15, 63, 15, BlockId::Water);
+        chunk.set(15, 64, 15, BlockId::Water);
+        world.chunks.insert(chunk.pos(), Arc::new(chunk));
+
+        assert!(world.is_underwater(Vec3::new(-0.5, 63.99, -0.5)));
+        assert!(world.is_underwater(Vec3::new(-0.5, 64.874, -0.5)));
+        assert!(!world.is_underwater(Vec3::new(-0.5, 64.875, -0.5)));
+        assert!(!world.is_underwater(Vec3::new(-0.5, 64.99, -0.5)));
+        assert!(!world.is_underwater(Vec3::new(0.5, 64.5, 0.5)));
     }
 }

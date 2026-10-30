@@ -10,12 +10,6 @@ layout(location = 0) out vec4 outColor;
 layout(location = 1) out float outDepth;
 
 void main() {
-    if (frame.fog.z > 0.5) {
-        outColor = vec4(tonemap(WATER_FOG), 1.0);
-        outDepth = 1.0;
-        return;
-    }
-
     // The point on the far plane behind this pixel, relative to the camera.
     vec4 far = frame.inverseViewProjection * vec4(vNdc, 1.0, 1.0);
     vec3 dir = normalize(far.xyz / far.w);
