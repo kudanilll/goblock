@@ -22,11 +22,11 @@ use crate::font;
 
 /// Chunk pipelines push one vec4: the chunk's origin relative to the camera.
 const CHUNK_PUSH_SIZE: u32 = 16;
-/// Size of the `Frame` uniform block in common.glsl: three mat4s and four
+/// Size of the `Frame` uniform block in common.glsl: three mat4s and five
 /// vec4s.
-const FRAME_UNIFORM_SIZE: usize = 3 * 64 + 4 * 16;
-/// HUD vertices one frame can hold, six per glyph.
-const HUD_VERTEX_CAPACITY: usize = 4096;
+const FRAME_UNIFORM_SIZE: usize = 3 * 64 + 5 * 16;
+/// HUD vertices one frame can hold, six per glyph or panel.
+const HUD_VERTEX_CAPACITY: usize = 16384;
 /// Where fog begins, as a fraction of [`FrameView::fog_end`].
 const FOG_START: f32 = 0.6;
 /// Layers drawn in the scene pass and into the shadow map: opaque blocks,
@@ -56,6 +56,8 @@ pub struct FrameView {
     /// Whether the camera is in water, which swaps the sky and the fog for
     /// murky water.
     pub underwater: bool,
+    /// Whether the settings menu is open, blurring and dimming the game scene.
+    pub blur_background: bool,
 }
 
 pub struct Renderer {
@@ -283,6 +285,11 @@ impl Renderer {
                     .binding(0)
                     .format(vk::Format::R32G32_SFLOAT)
                     .offset(8),
+                vk::VertexInputAttributeDescription::default()
+                    .location(2)
+                    .binding(0)
+                    .format(vk::Format::R8G8B8A8_UNORM)
+                    .offset(16),
             ],
             // vec2 at offset 0, then a vec4, which has to start on a 16-byte boundary.
             push_constant_size: 32,
@@ -551,7 +558,11 @@ impl Renderer {
     }
 
     /// Draw one frame.
-    pub fn draw_frame(&mut self, view: &FrameView, hud_lines: &[String]) -> Result<(), VkError> {
+    pub fn draw_frame(
+        &mut self,
+        view: &FrameView,
+        ui_vertices: &[HudVertex],
+    ) -> Result<(), VkError> {
         if self.width == 0 || self.height == 0 {
             return Ok(());
         }
@@ -595,7 +606,7 @@ impl Renderer {
                 self.shadow.texel(),
                 self.reflections,
             ));
-            self.upload_hud(frame, hud_lines);
+            self.upload_hud(frame, ui_vertices);
 
             let command_buffer = self.command_buffers[frame];
             self.device
@@ -779,18 +790,20 @@ impl Renderer {
         );
         d.cmd_draw(cmd, 3, 1, 0, 0);
 
-        let (pipeline, layout) = self.water_pipeline;
-        d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
-        d.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::GRAPHICS,
-            layout,
-            0,
-            &frame_set,
-            &[],
-        );
-        self.chunks
-            .draw(device, cmd, layout, LAYERS - 1, visible.iter());
+        if !view.blur_background {
+            let (pipeline, layout) = self.water_pipeline;
+            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            d.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                layout,
+                0,
+                &frame_set,
+                &[],
+            );
+            self.chunks
+                .draw(device, cmd, layout, LAYERS - 1, visible.iter());
+        }
 
         // HUD last, blended over everything else.
         if self.hud_vertex_count > 0 {
@@ -825,10 +838,12 @@ impl Renderer {
             .map_err(|e| VkError::new("end_command_buffer", e))
     }
 
-    fn upload_hud(&mut self, frame: usize, lines: &[String]) {
-        let vertices = build_hud_vertices(lines, HUD_VERTEX_CAPACITY);
-        self.hud_vertex_count = vertices.len() as u32;
-        self.hud_vertices[frame].write(&vertices);
+    fn upload_hud(&mut self, frame: usize, vertices: &[HudVertex]) {
+        let count = vertices.len().min(HUD_VERTEX_CAPACITY);
+        if count > 0 {
+            self.hud_vertices[frame].write(&vertices[..count]);
+        }
+        self.hud_vertex_count = count as u32;
     }
 }
 
@@ -907,6 +922,7 @@ fn frame_uniforms(
             flag(reflections),
         ],
         &[feet.x, feet.y, feet.z, view.player_height],
+        &[flag(view.blur_background), 0.0, 0.0, 0.0],
     ]
     .concat();
     bytemuck::cast_slice(&floats).to_vec()
@@ -960,51 +976,114 @@ fn sampler_info(
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct HudVertex {
     pub pos: [f32; 2],
     pub uv: [f32; 2],
+    pub color: [u8; 4],
 }
 
-fn build_hud_vertices(lines: &[String], capacity: usize) -> Vec<HudVertex> {
-    const SCALE: f32 = 2.0;
-    const MARGIN: f32 = 8.0;
-    const LINE_SPACING: f32 = 4.0;
-
-    let glyph_w = font::GLYPH_W as f32 * SCALE;
-    let glyph_h = font::GLYPH_H as f32 * SCALE;
-    let advance = font::advance() as f32 * SCALE;
+pub fn build_hud_vertices(lines: &[String]) -> Vec<HudVertex> {
+    const SCALE: f32 = 1.0;
+    const MARGIN: f32 = 12.0;
+    const LINE_SPACING: f32 = 6.0;
+    let white = [255, 255, 255, 255];
 
     let mut out = Vec::new();
-    for (index, line) in lines.iter().enumerate() {
-        let y = MARGIN + index as f32 * (glyph_h + LINE_SPACING);
-        for (col, ch) in line.chars().enumerate() {
-            if out.len() + 6 > capacity {
-                return out;
-            }
-            let x = MARGIN + col as f32 * advance;
-            push_glyph(&mut out, ch, x, y, glyph_w, glyph_h);
-        }
+    let mut y = MARGIN;
+    for line in lines {
+        draw_text(
+            &mut out,
+            font::FontKind::Regular,
+            line,
+            MARGIN,
+            y,
+            SCALE,
+            white,
+        );
+        y += 18.0 * SCALE + LINE_SPACING;
     }
     out
 }
 
-fn push_glyph(out: &mut Vec<HudVertex>, ch: char, x: f32, y: f32, w: f32, h: f32) {
-    let (min, max) = font::glyph_uv(ch);
-    let (u0, v0) = (min[0], min[1]);
-    let (u1, v1) = (max[0], max[1]);
+pub fn push_glyph(
+    out: &mut Vec<HudVertex>,
+    kind: font::FontKind,
+    ch: char,
+    x: f32,
+    y: f32,
+    scale: f32,
+    color: [u8; 4],
+) -> f32 {
+    let m = font::glyph_metric(kind, ch);
+    if m.width > 0.0 && m.height > 0.0 {
+        let gx = x + m.offset_x * scale;
+        let gy = y + m.offset_y * scale;
+        let gw = m.width * scale;
+        let gh = m.height * scale;
+        let (u0, v0) = (m.uv_min[0], m.uv_min[1]);
+        let (u1, v1) = (m.uv_max[0], m.uv_max[1]);
+        let quad = [
+            (gx, gy, u0, v0),
+            (gx, gy + gh, u0, v1),
+            (gx + gw, gy + gh, u1, v1),
+            (gx, gy, u0, v0),
+            (gx + gw, gy + gh, u1, v1),
+            (gx + gw, gy, u1, v0),
+        ];
+        for (px, py, u, v) in quad {
+            out.push(HudVertex {
+                pos: [px, py],
+                uv: [u, v],
+                color,
+            });
+        }
+    }
+    m.advance * scale
+}
+
+pub fn draw_text(
+    out: &mut Vec<HudVertex>,
+    kind: font::FontKind,
+    text: &str,
+    mut x: f32,
+    y: f32,
+    scale: f32,
+    color: [u8; 4],
+) -> f32 {
+    let start_x = x;
+    for ch in text.chars() {
+        if out.len() + 6 > HUD_VERTEX_CAPACITY {
+            break;
+        }
+        x += push_glyph(out, kind, ch, x, y, scale, color);
+    }
+    x - start_x
+}
+
+pub fn measure_text(kind: font::FontKind, text: &str, scale: f32) -> f32 {
+    let mut width = 0.0;
+    for ch in text.chars() {
+        width += font::glyph_metric(kind, ch).advance * scale;
+    }
+    width
+}
+
+pub fn push_rect(out: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f32, color: [u8; 4]) {
+    let [u, v] = font::white_pixel_uv();
     let quad = [
-        (x, y, u0, v0),
-        (x, y + h, u0, v1),
-        (x + w, y + h, u1, v1),
-        (x, y, u0, v0),
-        (x + w, y + h, u1, v1),
-        (x + w, y, u1, v0),
+        (x, y),
+        (x, y + h),
+        (x + w, y + h),
+        (x, y),
+        (x + w, y + h),
+        (x + w, y),
     ];
-    for (px, py, u, v) in quad {
+    for (px, py) in quad {
         out.push(HudVertex {
             pos: [px, py],
             uv: [u, v],
+            color,
         });
     }
 }
@@ -1023,6 +1102,7 @@ mod tests {
             fog_end: 100.0,
             time: 7.0,
             underwater: true,
+            blur_background: false,
         };
         let bytes = frame_uniforms(&view, &Mat4::IDENTITY, 0.5, true);
         assert_eq!(bytes.len(), FRAME_UNIFORM_SIZE);
@@ -1038,11 +1118,31 @@ mod tests {
         assert_eq!(float(228), 100.0, "fog end");
         assert_eq!(float(232), 1.0, "underwater flag in fog.z");
         assert_eq!(float(236), 1.0, "reflection flag in fog.w");
-        assert_eq!(bytes.len(), 256);
+        assert_eq!(bytes.len(), 272);
         assert_eq!(
             [float(240), float(244), float(248), float(252)],
             [0.0, -1.5, 0.0, 1.8]
         );
+        assert_eq!(float(256), 0.0, "blur_background flag in uiState.x");
+    }
+
+    #[test]
+    fn frame_uniforms_include_ui_state() {
+        let view = FrameView {
+            camera: Vec3::new(1.0, 2.0, 3.0),
+            player_feet: Vec3::new(1.0, 0.5, 3.0),
+            player_height: 1.8,
+            view_projection: Mat4::IDENTITY,
+            fog_end: 100.0,
+            time: 7.0,
+            underwater: false,
+            blur_background: true,
+        };
+        let bytes = frame_uniforms(&view, &Mat4::IDENTITY, 0.5, true);
+        assert_eq!(bytes.len(), 272);
+        let float =
+            |offset: usize| f32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        assert_eq!(float(256), 1.0, "blur_background flag in uiState.x");
     }
 
     #[test]

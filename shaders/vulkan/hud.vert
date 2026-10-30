@@ -2,6 +2,7 @@
 
 layout(location = 0) in vec2 aPos;
 layout(location = 1) in vec2 aUV;
+layout(location = 2) in vec4 aColor;
 
 layout(push_constant) uniform Push {
     vec2 screenSize;
@@ -9,6 +10,7 @@ layout(push_constant) uniform Push {
 } pc;
 
 layout(location = 0) out vec2 vUV;
+layout(location = 1) out vec4 vColor;
 
 void main() {
     // aPos is in pixels with the origin at the top-left. Vulkan NDC also has
@@ -19,4 +21,5 @@ void main() {
     );
     gl_Position = vec4(ndc, 0.0, 1.0);
     vUV = aUV;
+    vColor = aColor * pc.color;
 }

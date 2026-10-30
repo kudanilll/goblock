@@ -33,6 +33,19 @@ impl DesktopInput {
         window.set_cursor_visible(false);
     }
 
+    pub fn release_cursor_grab(&mut self, window: &Window) {
+        let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
+        window.set_cursor_visible(true);
+        self.first_mouse = true;
+        self.look_delta = Vec2::ZERO;
+    }
+
+    pub fn capture_cursor_grab(&mut self, window: &Window) {
+        self.set_cursor_grab(window);
+        self.first_mouse = true;
+        self.look_delta = Vec2::ZERO;
+    }
+
     pub fn handle_window_event(&mut self, event: &WindowEvent) {
         match event {
             WindowEvent::KeyboardInput { event, .. } => {

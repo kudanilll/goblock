@@ -7,6 +7,7 @@
 mod assets;
 mod game;
 mod input;
+mod settings;
 
 use std::sync::Arc;
 
@@ -15,7 +16,7 @@ use goblock_render::{FrameView, Renderer};
 use goblock_world::WorldEvent;
 use input::DesktopInput;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -53,6 +54,10 @@ struct ActiveState {
     window: Arc<Window>,
     game: game::Game,
     input: DesktopInput,
+    settings: settings::Settings,
+    settings_menu: settings::SettingsMenu,
+    settings_open: bool,
+    mouse_pos: (f32, f32),
 }
 
 impl ApplicationHandler for App {
@@ -85,23 +90,89 @@ impl ApplicationHandler for App {
                 }
                 state.game.set_screen_size(size);
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                state.mouse_pos = (position.x as f32, position.y as f32);
+                if state.settings_open {
+                    let size = state.window.inner_size();
+                    state.settings_menu.handle_mouse_move(
+                        &mut state.settings,
+                        position.x as f32,
+                        position.y as f32,
+                        size.width as f32,
+                        size.height as f32,
+                    );
+                }
+            }
+            WindowEvent::MouseInput {
+                state: button_state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if state.settings_open {
+                    let size = state.window.inner_size();
+                    if button_state == ElementState::Pressed {
+                        let action = state.settings_menu.handle_mouse_down(
+                            &mut state.settings,
+                            state.mouse_pos.0,
+                            state.mouse_pos.1,
+                            size.width as f32,
+                            size.height as f32,
+                        );
+                        match action {
+                            settings::Action::Close => {
+                                state.settings_open = false;
+                                state.input.capture_cursor_grab(&state.window);
+                            }
+                            settings::Action::Quit => {
+                                event_loop.exit();
+                            }
+                            settings::Action::None => {}
+                        }
+                    } else {
+                        state.settings_menu.handle_mouse_up();
+                    }
+                }
+            }
             WindowEvent::RedrawRequested => match state.frame() {
                 Ok(true) => state.window.request_redraw(),
                 Ok(false) => event_loop.exit(),
                 Err(e) => state.fail(event_loop, e),
             },
             WindowEvent::KeyboardInput { event: key, .. }
-                if key.state == ElementState::Pressed
-                    && !key.repeat
-                    && key.physical_key == PhysicalKey::Code(KeyCode::F11) =>
+                if key.state == ElementState::Pressed && !key.repeat =>
             {
-                // Borderless rather than exclusive fullscreen: it switches
-                // instantly and works on every platform winit supports.
-                let fullscreen = match state.window.fullscreen() {
-                    Some(_) => None,
-                    None => Some(Fullscreen::Borderless(None)),
-                };
-                state.window.set_fullscreen(fullscreen);
+                if let PhysicalKey::Code(code) = key.physical_key {
+                    if code == KeyCode::Escape {
+                        state.settings_open = !state.settings_open;
+                        if state.settings_open {
+                            state.input.release_cursor_grab(&state.window);
+                        } else {
+                            state.input.capture_cursor_grab(&state.window);
+                        }
+                    } else if state.settings_open {
+                        let action = state
+                            .settings_menu
+                            .handle_key_down(&mut state.settings, code);
+                        match action {
+                            settings::Action::Close => {
+                                state.settings_open = false;
+                                state.input.capture_cursor_grab(&state.window);
+                            }
+                            settings::Action::Quit => {
+                                event_loop.exit();
+                            }
+                            settings::Action::None => {}
+                        }
+                    } else if code == KeyCode::F11 {
+                        // Borderless rather than exclusive fullscreen: it switches
+                        // instantly and works on every platform winit supports.
+                        let fullscreen = match state.window.fullscreen() {
+                            Some(_) => None,
+                            None => Some(Fullscreen::Borderless(None)),
+                        };
+                        state.window.set_fullscreen(fullscreen);
+                    }
+                }
             }
             _ => {}
         }
@@ -114,7 +185,9 @@ impl ApplicationHandler for App {
         event: winit::event::DeviceEvent,
     ) {
         if let Some(state) = self.state.as_mut() {
-            state.input.handle_device_event(&event);
+            if !state.settings_open {
+                state.input.handle_device_event(&event);
+            }
         }
     }
 }
@@ -174,14 +247,21 @@ impl ActiveState {
 
         let game = game::Game::new(seed).map_err(|e| format!("start world: {e}"))?;
 
-        let input = DesktopInput::new();
-        input.set_cursor_grab(&window);
+        let mut input = DesktopInput::new();
+        input.capture_cursor_grab(&window);
+
+        let settings = settings::Settings::default();
+        let settings_menu = settings::SettingsMenu::new();
 
         Ok(Self {
             renderer,
             window,
             game,
             input,
+            settings,
+            settings_menu,
+            settings_open: false,
+            mouse_pos: (0.0, 0.0),
         })
     }
 
@@ -191,16 +271,23 @@ impl ActiveState {
         let delta = now - self.game.last_frame();
         self.game.set_last_frame(now);
 
-        let input = self.input.poll();
-        if input.quit {
-            return Ok(false);
-        }
-        self.game.update(delta.as_secs_f32(), &input);
+        let size = self.window.inner_size();
+        let screen_w = size.width as f32;
+        let screen_h = size.height as f32;
 
-        for event in self.game.stream() {
-            match event {
-                WorldEvent::Meshed(pos, mesh) => self.renderer.upload_chunk(pos, &mesh)?,
-                WorldEvent::Unloaded(pos) => self.renderer.remove_chunk(pos),
+        if !self.settings_open {
+            let mut input = self.input.poll();
+            input.look_delta.x *= self.settings.sensitivity / 2.5;
+            input.look_delta.y *= (self.settings.sensitivity / 2.5)
+                * (if self.settings.invert_y { -1.0 } else { 1.0 });
+
+            self.game.update(delta.as_secs_f32(), &input);
+
+            for event in self.game.stream() {
+                match event {
+                    WorldEvent::Meshed(pos, mesh) => self.renderer.upload_chunk(pos, &mesh)?,
+                    WorldEvent::Unloaded(pos) => self.renderer.remove_chunk(pos),
+                }
             }
         }
 
@@ -213,9 +300,18 @@ impl ActiveState {
             fog_end: self.game.fog_end(),
             time: self.game.elapsed(),
             underwater: self.game.underwater(),
+            blur_background: self.settings_open,
         };
-        let lines = self.game.hud_lines(self.renderer.chunk_count());
-        self.renderer.draw_frame(&view, &lines)?;
+
+        let ui_vertices = if self.settings_open {
+            self.settings_menu
+                .build_vertices(&self.settings, screen_w, screen_h)
+        } else {
+            let lines = self.game.hud_lines(self.renderer.chunk_count());
+            goblock_render::build_hud_vertices(&lines)
+        };
+
+        self.renderer.draw_frame(&view, &ui_vertices)?;
         Ok(true)
     }
 
