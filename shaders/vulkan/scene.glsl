@@ -33,3 +33,28 @@ float sceneContinuity(vec2 uv) {
     float spread = max(max(delta.x, delta.y), max(delta.z, delta.w));
     return 1.0 - smoothstep(0.05, 0.2, spread / max(centre, 0.1));
 }
+
+vec3 blurSceneColor(vec2 uv) {
+    vec2 pixel = 1.0 / vec2(textureSize(uSceneColor, 0));
+    float r = 3.5;
+    vec3 col = vec3(0.0);
+    col += textureLod(uSceneColor, sceneUv(uv + vec2(-r, -r) * pixel), 0.0).rgb * 0.09;
+    col += textureLod(uSceneColor, sceneUv(uv + vec2(0.0, -r) * pixel), 0.0).rgb * 0.12;
+    col += textureLod(uSceneColor, sceneUv(uv + vec2(r, -r) * pixel), 0.0).rgb * 0.09;
+    col += textureLod(uSceneColor, sceneUv(uv + vec2(-r, 0.0) * pixel), 0.0).rgb * 0.12;
+    col += textureLod(uSceneColor, sceneUv(uv), 0.0).rgb * 0.16;
+    col += textureLod(uSceneColor, sceneUv(uv + vec2(r, 0.0) * pixel), 0.0).rgb * 0.12;
+    col += textureLod(uSceneColor, sceneUv(uv + vec2(-r, r) * pixel), 0.0).rgb * 0.09;
+    col += textureLod(uSceneColor, sceneUv(uv + vec2(0.0, r) * pixel), 0.0).rgb * 0.12;
+    col += textureLod(uSceneColor, sceneUv(uv + vec2(r, r) * pixel), 0.0).rgb * 0.09;
+    return col;
+}
+
+float sceneVignette(vec2 uv) {
+    vec2 d = uv * 2.0 - 1.0;
+    return clamp(1.0 - dot(d, d) * 0.20, 0.0, 1.0) * 0.58;
+}
+
+vec3 blurScene(vec2 uv) {
+    return blurSceneColor(uv) * sceneVignette(uv);
+}

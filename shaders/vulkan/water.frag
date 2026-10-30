@@ -185,7 +185,9 @@ void main() {
         bent = sceneUv(screen);
         floorDepth = straightDepth;
     }
-    vec3 behind = textureLod(uSceneColor, bent, 0.0).rgb;
+    vec3 behind = frame.uiState.x > 0.5
+        ? blurSceneColor(bent)
+        : textureLod(uSceneColor, bent, 0.0).rgb;
 
     // Light from the floor fades with the distance it travels through the
     // water (Beer-Lambert), so shallow water is clear and deep water shows
@@ -204,7 +206,10 @@ void main() {
         vec3 hit = reflected.y > 0.0
             ? traceReflection(vView + faceNormal * 0.05, reflected, 1.0)
             : vec3(0.0);
-        reflection = mix(reflection, textureLod(uSceneColor, hit.xy, 0.0).rgb, hit.z);
+        vec3 hitCol = frame.uiState.x > 0.5
+            ? blurSceneColor(hit.xy)
+            : textureLod(uSceneColor, hit.xy, 0.0).rgb;
+        reflection = mix(reflection, hitCol, hit.z);
     }
 
     if (fromBelow) {
@@ -229,6 +234,9 @@ void main() {
     } else {
         vec4 fog = fogBetween(viewDir, distance);
         finalColor = mix(color, tonemap(fog.rgb), fog.a);
+    }
+    if (frame.uiState.x > 0.5) {
+        finalColor *= sceneVignette(screen);
     }
     outColor = vec4(finalColor, 1.0);
 }

@@ -790,20 +790,18 @@ impl Renderer {
         );
         d.cmd_draw(cmd, 3, 1, 0, 0);
 
-        if !view.blur_background {
-            let (pipeline, layout) = self.water_pipeline;
-            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
-            d.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                layout,
-                0,
-                &frame_set,
-                &[],
-            );
-            self.chunks
-                .draw(device, cmd, layout, LAYERS - 1, visible.iter());
-        }
+        let (pipeline, layout) = self.water_pipeline;
+        d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+        d.cmd_bind_descriptor_sets(
+            cmd,
+            vk::PipelineBindPoint::GRAPHICS,
+            layout,
+            0,
+            &frame_set,
+            &[],
+        );
+        self.chunks
+            .draw(device, cmd, layout, LAYERS - 1, visible.iter());
 
         // HUD last, blended over everything else.
         if self.hud_vertex_count > 0 {
