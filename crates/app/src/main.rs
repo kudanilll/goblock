@@ -532,6 +532,7 @@ impl ActiveState {
                     game.player.flying = meta.player_flying;
                     game.camera
                         .set_orientation(meta.player_yaw, meta.player_pitch);
+                    game.spawn_settled = true;
                 }
                 meta.last_played = std::time::SystemTime::now()
                     .duration_since(std::time::SystemTime::UNIX_EPOCH)

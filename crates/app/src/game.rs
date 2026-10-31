@@ -18,12 +18,12 @@ pub struct Game {
     screen_width: f32,
     screen_height: f32,
     start: Instant,
+    pub spawn_settled: bool,
 }
 
 impl Game {
-    /// Start a world for `seed` with the player above dry land near the
-    /// origin. The player drops onto the ground, or onto a tree, once the
-    /// chunk below has loaded.
+    /// Start a world for `seed` with the player standing on the ground near
+    /// the origin.
     pub fn new(seed: u64) -> std::io::Result<Self> {
         let world = World::new(seed, VIEW_DISTANCE)?;
         let (x, z) = world.terrain().find_spawn();
@@ -31,7 +31,7 @@ impl Game {
 
         let player = Player::new(DVec3::new(
             x as f64 + 0.5,
-            (ground + 12) as f64,
+            (ground + 1) as f64,
             z as f64 + 0.5,
         ));
         let mut camera = Camera::default();
@@ -44,6 +44,7 @@ impl Game {
             screen_width: 800.0,
             screen_height: 600.0,
             start: Instant::now(),
+            spawn_settled: false,
         })
     }
 
@@ -85,10 +86,25 @@ impl Game {
         // Unloaded chunks read as air, so the player would fall straight
         // through them. Hold still until the ground below exists.
         let feet = self.player.feet;
-        if self
-            .world
-            .is_loaded(feet.x.floor() as i32, feet.z.floor() as i32)
-        {
+        let cell_x = feet.x.floor() as i32;
+        let cell_z = feet.z.floor() as i32;
+        if self.world.is_loaded(cell_x, cell_z) {
+            if !self.spawn_settled {
+                self.spawn_settled = true;
+                let start_y = (feet.y.floor() as i32 + 16).min(goblock_world::WORLD_HEIGHT - 1);
+                for y in (0..=start_y).rev() {
+                    if self
+                        .world
+                        .block_at(glam::IVec3::new(cell_x, y, cell_z))
+                        .is_solid()
+                    {
+                        self.player.feet.y = (y + 1) as f64;
+                        self.player.on_ground = true;
+                        self.player.velocity = glam::Vec3::ZERO;
+                        break;
+                    }
+                }
+            }
             let world = &self.world;
             self.player.update(
                 input,
@@ -134,6 +150,16 @@ mod tests {
             .terrain()
             .sample(p.x.floor() as i32, p.z.floor() as i32);
         assert!(p.y > ground.height as f32 + 1.0);
+    }
+
+    #[test]
+    fn player_starts_on_the_ground_surface() {
+        let game = Game::new(3).unwrap();
+        let ground = game.world.terrain().sample(
+            game.player.feet.x.floor() as i32,
+            game.player.feet.z.floor() as i32,
+        );
+        assert_eq!(game.player.feet.y, (ground.height + 1) as f64);
     }
 
     #[test]
