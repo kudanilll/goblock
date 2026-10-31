@@ -7,3 +7,6 @@ target/
 # Superpowes
 .superpowers
 docs/superpowers/
+
+# Local game saves
+saves/

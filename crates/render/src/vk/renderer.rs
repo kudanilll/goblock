@@ -17,6 +17,7 @@ use super::error::VkError;
 use super::resources::{create_pipeline, DynamicBuffer, ImageData, PipelineConfig, Texture};
 use super::shadow::{shadow_matrix, ShadowMap};
 use super::swapchain::{FrameSync, Swapchain};
+use crate::background_textures::BackgroundTextures;
 use crate::block_textures::{build_mips, BlockTextures};
 use crate::font;
 
@@ -58,6 +59,8 @@ pub struct FrameView {
     pub underwater: bool,
     /// Whether the settings menu is open, blurring and dimming the game scene.
     pub blur_background: bool,
+    /// When Some((layer_a, layer_b, blend)), renders the static background slideshow instead of 3D scene.
+    pub menu_background: Option<(u32, u32, f32)>,
 }
 
 pub struct Renderer {
@@ -78,6 +81,8 @@ pub struct Renderer {
     water_pipeline: (vk::Pipeline, vk::PipelineLayout),
     /// Copies the scene onto the swapchain image.
     composite_pipeline: (vk::Pipeline, vk::PipelineLayout),
+    /// Background slideshow pipeline for menu screens.
+    background_pipeline: (vk::Pipeline, vk::PipelineLayout),
     sky_pipeline: vk::Pipeline,
     sky_pipeline_layout: vk::PipelineLayout,
     hud_pipeline: vk::Pipeline,
@@ -91,13 +96,17 @@ pub struct Renderer {
     /// colour and depth.
     frame_set_layout: vk::DescriptorSetLayout,
     hud_set_layout: vk::DescriptorSetLayout,
+    background_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     /// One per frame in flight, each pointing at its own uniform buffer.
     frame_sets: Vec<vk::DescriptorSet>,
     frame_uniforms: Vec<DynamicBuffer>,
     hud_set: vk::DescriptorSet,
+    background_set: vk::DescriptorSet,
     block_texture: Texture,
     hud_texture: Texture,
+    background_texture: Texture,
+    pub background_layers: u32,
     /// One per frame in flight, so the CPU never rewrites vertices the GPU
     /// may still be reading for the previous frame.
     hud_vertices: Vec<DynamicBuffer>,
@@ -117,6 +126,7 @@ impl Renderer {
         width: u32,
         height: u32,
         textures: &BlockTextures,
+        backgrounds: &BackgroundTextures,
     ) -> Result<Self, VkError> {
         let swapchain = Swapchain::new(&device, width, height)?;
         let frames = FrameSync::new(&device)?;
@@ -149,6 +159,13 @@ impl Renderer {
             .map_err(|e| VkError::new("create_descriptor_set_layout", e))?;
         let hud_bindings = [sampler_binding(0)];
         let hud_set_layout = device
+            .device
+            .create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&hud_bindings),
+                None,
+            )
+            .map_err(|e| VkError::new("create_descriptor_set_layout", e))?;
+        let background_set_layout = device
             .device
             .create_descriptor_set_layout(
                 &vk::DescriptorSetLayoutCreateInfo::default().bindings(&hud_bindings),
@@ -267,6 +284,23 @@ impl Renderer {
         );
         let composite_pipeline = create_pipeline(&device, &composite_config, device.final_pass)?;
 
+        let bg_config = PipelineConfig {
+            vs_bytes: include_bytes!(concat!(env!("OUT_DIR"), "/sky.vert.spv")),
+            fs_bytes: include_bytes!(concat!(env!("OUT_DIR"), "/background.frag.spv")),
+            vertex_bindings: vec![],
+            vertex_attributes: vec![],
+            push_constant_size: 16,
+            depth_test: false,
+            depth_write: false,
+            blend: false,
+            cull_back: false,
+            depth_only: false,
+            color_attachments: 1,
+            descriptor_layouts: vec![background_set_layout],
+            specialization: None,
+        };
+        let background_pipeline = create_pipeline(&device, &bg_config, device.final_pass)?;
+
         let hud_config = PipelineConfig {
             vs_bytes: include_bytes!(concat!(env!("OUT_DIR"), "/hud.vert.spv")),
             fs_bytes: include_bytes!(concat!(env!("OUT_DIR"), "/hud.frag.spv")),
@@ -342,6 +376,21 @@ impl Renderer {
             ),
         )?;
 
+        let background_texture = Texture::new(
+            &device,
+            &ImageData {
+                format: vk::Format::R8G8B8A8_SRGB,
+                bytes_per_texel: 4,
+                width: backgrounds.width,
+                height: backgrounds.height,
+                layers: backgrounds.layers,
+                levels: 1,
+                view_type: vk::ImageViewType::TYPE_2D_ARRAY,
+                pixels: &backgrounds.pixels,
+            },
+            &sampler_info(vk::Filter::LINEAR, vk::SamplerMipmapMode::NEAREST, 1.0),
+        )?;
+
         let frame_uniforms = (0..MAX_FRAMES_IN_FLIGHT)
             .map(|_| {
                 DynamicBuffer::new(
@@ -359,13 +408,13 @@ impl Renderer {
                 .descriptor_count(frames_in_flight),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(4 * frames_in_flight + 1),
+                .descriptor_count(4 * frames_in_flight + 2),
         ];
         let descriptor_pool = device
             .device
             .create_descriptor_pool(
                 &vk::DescriptorPoolCreateInfo::default()
-                    .max_sets(frames_in_flight + 1)
+                    .max_sets(frames_in_flight + 2)
                     .pool_sizes(&pool_sizes),
                 None,
             )
@@ -373,6 +422,7 @@ impl Renderer {
 
         let mut set_layouts = vec![frame_set_layout; MAX_FRAMES_IN_FLIGHT];
         set_layouts.push(hud_set_layout);
+        set_layouts.push(background_set_layout);
         let mut sets = device
             .device
             .allocate_descriptor_sets(
@@ -381,6 +431,7 @@ impl Renderer {
                     .set_layouts(&set_layouts),
             )
             .map_err(|e| VkError::new("allocate_descriptor_sets", e))?;
+        let background_set = sets.pop().expect("one set per layout");
         let hud_set = sets.pop().expect("one set per layout");
         let frame_sets = sets;
 
@@ -412,7 +463,11 @@ impl Renderer {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(info)
         };
-        let mut writes = vec![image_write(hud_set, 0, &hud_image)];
+        let background_image = image_info(&background_texture);
+        let mut writes = vec![
+            image_write(hud_set, 0, &hud_image),
+            image_write(background_set, 0, &background_image),
+        ];
         for (&set, uniform) in frame_sets.iter().zip(&uniform_infos) {
             writes.push(
                 vk::WriteDescriptorSet::default()
@@ -492,6 +547,7 @@ impl Renderer {
             shadow_pipelines,
             water_pipeline,
             composite_pipeline,
+            background_pipeline,
             sky_pipeline,
             sky_pipeline_layout,
             hud_pipeline,
@@ -500,12 +556,16 @@ impl Renderer {
             reflections,
             frame_set_layout,
             hud_set_layout,
+            background_set_layout,
             descriptor_pool,
             frame_sets,
             frame_uniforms,
             hud_set,
+            background_set,
             block_texture,
             hud_texture,
+            background_texture,
+            background_layers: backgrounds.layers,
             hud_vertices,
             hud_vertex_count: 0,
             width,
@@ -527,6 +587,10 @@ impl Renderer {
 
     pub fn remove_chunk(&mut self, pos: IVec2) {
         self.chunks.remove(pos);
+    }
+
+    pub fn clear_chunks(&mut self) {
+        self.chunks.clear();
     }
 
     /// Chunks currently on the GPU.
@@ -778,30 +842,52 @@ impl Renderer {
             .render_area(render_area);
         d.cmd_begin_render_pass(cmd, &info, vk::SubpassContents::INLINE);
 
-        let (pipeline, layout) = self.composite_pipeline;
-        d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
-        d.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::GRAPHICS,
-            layout,
-            0,
-            &frame_set,
-            &[],
-        );
-        d.cmd_draw(cmd, 3, 1, 0, 0);
+        if let Some((layer_a, layer_b, blend)) = view.menu_background {
+            let (pipeline, layout) = self.background_pipeline;
+            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            let push = [layer_a as f32, layer_b as f32, blend, 0.0f32];
+            d.cmd_push_constants(
+                cmd,
+                layout,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                0,
+                bytemuck::cast_slice(&push),
+            );
+            d.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                layout,
+                0,
+                &[self.background_set],
+                &[],
+            );
+            d.cmd_draw(cmd, 3, 1, 0, 0);
+        } else {
+            let (pipeline, layout) = self.composite_pipeline;
+            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            d.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                layout,
+                0,
+                &frame_set,
+                &[],
+            );
+            d.cmd_draw(cmd, 3, 1, 0, 0);
 
-        let (pipeline, layout) = self.water_pipeline;
-        d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
-        d.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::GRAPHICS,
-            layout,
-            0,
-            &frame_set,
-            &[],
-        );
-        self.chunks
-            .draw(device, cmd, layout, LAYERS - 1, visible.iter());
+            let (pipeline, layout) = self.water_pipeline;
+            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            d.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                layout,
+                0,
+                &frame_set,
+                &[],
+            );
+            self.chunks
+                .draw(device, cmd, layout, LAYERS - 1, visible.iter());
+        }
 
         // HUD last, blended over everything else.
         if self.hud_vertex_count > 0 {
@@ -860,6 +946,7 @@ impl Drop for Renderer {
             }
             self.block_texture.destroy(&self.device);
             self.hud_texture.destroy(&self.device);
+            self.background_texture.destroy(&self.device);
 
             for sampler in self.scene_samplers {
                 device.destroy_sampler(sampler, None);
@@ -867,10 +954,12 @@ impl Drop for Renderer {
             device.destroy_descriptor_pool(self.descriptor_pool, None);
             device.destroy_descriptor_set_layout(self.frame_set_layout, None);
             device.destroy_descriptor_set_layout(self.hud_set_layout, None);
+            device.destroy_descriptor_set_layout(self.background_set_layout, None);
 
             let others = [
                 self.water_pipeline,
                 self.composite_pipeline,
+                self.background_pipeline,
                 (self.sky_pipeline, self.sky_pipeline_layout),
                 (self.hud_pipeline, self.hud_pipeline_layout),
             ];
@@ -1101,6 +1190,7 @@ mod tests {
             time: 7.0,
             underwater: true,
             blur_background: false,
+            menu_background: None,
         };
         let bytes = frame_uniforms(&view, &Mat4::IDENTITY, 0.5, true);
         assert_eq!(bytes.len(), FRAME_UNIFORM_SIZE);
@@ -1135,6 +1225,7 @@ mod tests {
             time: 7.0,
             underwater: false,
             blur_background: true,
+            menu_background: None,
         };
         let bytes = frame_uniforms(&view, &Mat4::IDENTITY, 0.5, true);
         assert_eq!(bytes.len(), 272);
@@ -1181,5 +1272,12 @@ mod tests {
         let mesh = goblock_world::mesh::build_mesh([&chunk; 9]);
         let mesh_top = mesh.vertices.iter().map(|v| v.position[1]).max().unwrap();
         assert_eq!(level, mesh_top as f32 / 16.0);
+    }
+
+    #[test]
+    fn background_shader_bytes_are_available() {
+        let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/background.frag.spv"));
+        assert!(!bytes.is_empty());
+        assert_eq!(bytes.len() % 4, 0);
     }
 }

@@ -6,7 +6,7 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use goblock_render::block_textures::{linear_to_srgb, srgb_to_linear};
-use goblock_render::BlockTextures;
+use goblock_render::{BackgroundTextures, BlockTextures, BG_HEIGHT, BG_WIDTH};
 use goblock_world::Texture;
 
 /// Edge length every block texture is resampled to.
@@ -62,6 +62,63 @@ pub fn load_block_textures() -> LoadedTextures {
         },
         missing,
     }
+}
+
+const BACKGROUND_DIR: &str = "assets/backgrounds";
+
+pub fn load_background_textures() -> BackgroundTextures {
+    let mut dirs = vec![PathBuf::from(BACKGROUND_DIR)];
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    {
+        dirs.push(exe_dir.join(BACKGROUND_DIR));
+    }
+
+    let mut images = Vec::new();
+    for dir in &dirs {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            let mut paths: Vec<_> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|ext| ext.to_str()) == Some("png"))
+                .collect();
+            paths.sort();
+            for path in paths {
+                if let Ok(img) = decode_file(&path) {
+                    images.push(img);
+                }
+            }
+            if !images.is_empty() {
+                break;
+            }
+        }
+    }
+
+    if images.is_empty() {
+        return BackgroundTextures::fallback();
+    }
+
+    let layers = images.len() as u32;
+    let mut pixels = Vec::with_capacity((BG_WIDTH * BG_HEIGHT * 4 * layers) as usize);
+    for img in &images {
+        pixels.extend(resample_rect(img, BG_WIDTH, BG_HEIGHT));
+    }
+
+    BackgroundTextures::new(BG_WIDTH, BG_HEIGHT, layers, pixels)
+}
+
+fn resample_rect(image: &Image, out_w: u32, out_h: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity((out_w * out_h * 4) as usize);
+    for y in 0..out_h {
+        let sy = y * image.height / out_h;
+        for x in 0..out_w {
+            let sx = x * image.width / out_w;
+            let idx = ((sy * image.width + sx) * 4) as usize;
+            out.extend_from_slice(&image.rgba[idx..idx + 4]);
+        }
+    }
+    out
 }
 
 /// An RGBA8 image.

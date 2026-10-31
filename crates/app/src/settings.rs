@@ -75,6 +75,7 @@ impl Tab {
 pub enum Action {
     None,
     Close,
+    ReturnToTitle,
     Quit,
 }
 
@@ -100,6 +101,7 @@ pub struct SettingsMenu {
     pub hovered_row: Option<usize>,
     pub hovered_tab: Option<Tab>,
     pub back_hovered: bool,
+    pub title_menu_hovered: bool,
     pub quit_hovered: bool,
     dragging_slider: Option<usize>,
 }
@@ -112,6 +114,7 @@ impl SettingsMenu {
             hovered_row: None,
             hovered_tab: None,
             back_hovered: false,
+            title_menu_hovered: false,
             quit_hovered: false,
             dragging_slider: None,
         }
@@ -352,6 +355,7 @@ impl SettingsMenu {
     pub fn handle_mouse_move(
         &mut self,
         settings: &mut Settings,
+        from_title: bool,
         x: f32,
         y: f32,
         width: f32,
@@ -361,6 +365,13 @@ impl SettingsMenu {
         let bot_y = height - 44.0;
         self.back_hovered =
             (24.0..=140.0).contains(&x) && (bot_y + 4.0..=bot_y + 40.0).contains(&y);
+
+        // Title Menu button hitbox (only when in-game)
+        let title_btn_x = 160.0;
+        let title_btn_w = 140.0;
+        self.title_menu_hovered = !from_title
+            && (title_btn_x..=title_btn_x + title_btn_w).contains(&x)
+            && (bot_y + 4.0..=bot_y + 40.0).contains(&y);
 
         // Quit button hitbox (bottom-right [QUIT GAME])
         let quit_w = 140.0;
@@ -431,15 +442,20 @@ impl SettingsMenu {
     pub fn handle_mouse_down(
         &mut self,
         settings: &mut Settings,
+        from_title: bool,
         x: f32,
         y: f32,
         width: f32,
         height: f32,
     ) -> Action {
-        self.handle_mouse_move(settings, x, y, width, height);
+        self.handle_mouse_move(settings, from_title, x, y, width, height);
 
         if self.back_hovered {
             return Action::Close;
+        }
+
+        if self.title_menu_hovered {
+            return Action::ReturnToTitle;
         }
 
         if self.quit_hovered {
@@ -477,7 +493,7 @@ impl SettingsMenu {
                     let track_w = 150.0;
                     if (track_x - 10.0..=track_x + track_w + 10.0).contains(&x) {
                         self.dragging_slider = Some(row);
-                        self.handle_mouse_move(settings, x, y, width, height);
+                        self.handle_mouse_move(settings, from_title, x, y, width, height);
                     }
                 }
                 SettingKind::Toggle => {
@@ -494,7 +510,13 @@ impl SettingsMenu {
         self.dragging_slider = None;
     }
 
-    pub fn build_vertices(&self, settings: &Settings, width: f32, height: f32) -> Vec<HudVertex> {
+    pub fn build_vertices(
+        &self,
+        settings: &Settings,
+        from_title: bool,
+        width: f32,
+        height: f32,
+    ) -> Vec<HudVertex> {
         let mut out = Vec::with_capacity(8192);
 
         // 1. Gentle dark transparent backdrop so game scene is clearly visible
@@ -1208,6 +1230,63 @@ impl SettingsMenu {
             [210, 220, 235, 255],
         );
 
+        if !from_title {
+            let title_btn_x = 160.0;
+            let title_btn_w = 140.0;
+            let title_bg = if self.title_menu_hovered {
+                [40, 55, 80, 230]
+            } else {
+                [20, 28, 42, 170]
+            };
+            push_rect(
+                &mut out,
+                title_btn_x,
+                bot_y + 8.0,
+                title_btn_w,
+                28.0,
+                title_bg,
+            );
+            let border_col = if self.title_menu_hovered {
+                [80, 160, 240, 255]
+            } else {
+                [50, 65, 90, 180]
+            };
+            push_rect(
+                &mut out,
+                title_btn_x,
+                bot_y + 8.0,
+                title_btn_w,
+                1.0,
+                border_col,
+            );
+            push_rect(
+                &mut out,
+                title_btn_x,
+                bot_y + 35.0,
+                title_btn_w,
+                1.0,
+                border_col,
+            );
+            push_rect(&mut out, title_btn_x, bot_y + 8.0, 1.0, 28.0, border_col);
+            push_rect(
+                &mut out,
+                title_btn_x + title_btn_w - 1.0,
+                bot_y + 8.0,
+                1.0,
+                28.0,
+                border_col,
+            );
+            draw_text(
+                &mut out,
+                FontKind::Headline,
+                "TITLE MENU",
+                title_btn_x + 18.0,
+                bot_y + 13.0,
+                0.65,
+                [255, 255, 255, 255],
+            );
+        }
+
         // Right button: [QUIT GAME] (Calculated width, perfectly fitted, zero overflow!)
         let quit_text = "QUIT GAME";
         let quit_scale = 0.75;
@@ -1313,8 +1392,17 @@ mod tests {
     fn mouse_click_on_back_returns_close() {
         let mut menu = SettingsMenu::new();
         let mut settings = Settings::default();
-        let action = menu.handle_mouse_down(&mut settings, 50.0, 570.0, 800.0, 600.0);
+        let action = menu.handle_mouse_down(&mut settings, true, 50.0, 570.0, 800.0, 600.0);
         assert!(matches!(action, Action::Close));
+    }
+
+    #[test]
+    fn mouse_click_on_title_menu_returns_return_to_title() {
+        let mut menu = SettingsMenu::new();
+        let mut settings = Settings::default();
+        // Title menu button when from_title is false at x = 160..300, y = 556..596
+        let action = menu.handle_mouse_down(&mut settings, false, 200.0, 570.0, 800.0, 600.0);
+        assert!(matches!(action, Action::ReturnToTitle));
     }
 
     #[test]
@@ -1322,7 +1410,7 @@ mod tests {
         let mut menu = SettingsMenu::new();
         let mut settings = Settings::default();
         // Quit button is on bottom right
-        let action = menu.handle_mouse_down(&mut settings, 730.0, 570.0, 800.0, 600.0);
+        let action = menu.handle_mouse_down(&mut settings, true, 730.0, 570.0, 800.0, 600.0);
         assert!(matches!(action, Action::Quit));
     }
 
@@ -1336,7 +1424,7 @@ mod tests {
         // Click right arrow on FOV row
         // content_x = 50.0, content_w = 700.0, ctrl_x = 50 + 700 - 280 = 470.0
         // arrow right: ctrl_x + 200..=ctrl_x + 235 = 670..=705
-        let action = menu.handle_mouse_down(&mut settings, 680.0, 120.0, 800.0, 600.0);
+        let action = menu.handle_mouse_down(&mut settings, true, 680.0, 120.0, 800.0, 600.0);
         assert!(matches!(action, Action::None));
         assert!(
             settings.fov > before_fov,

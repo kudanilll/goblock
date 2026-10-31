@@ -72,6 +72,7 @@ fn main() {
         "hud.frag",
         "water.frag",
         "composite.frag",
+        "background.frag",
     ];
 
     // Shared code that the shaders pull in with #include.

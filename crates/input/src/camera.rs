@@ -43,6 +43,20 @@ impl Camera {
         self.fov_degrees
     }
 
+    pub fn yaw(&self) -> f32 {
+        self.yaw
+    }
+
+    pub fn pitch(&self) -> f32 {
+        self.pitch
+    }
+
+    pub fn set_orientation(&mut self, yaw: f32, pitch: f32) {
+        self.yaw = yaw;
+        self.pitch = pitch.clamp(-89.0, 89.0);
+        self.update_vectors();
+    }
+
     /// Widen the view while sprinting and narrow it again afterwards,
     /// easing over a fraction of a second so the change reads as speed
     /// rather than a jump cut.

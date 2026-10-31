@@ -18,10 +18,6 @@ pub struct Game {
     screen_width: f32,
     screen_height: f32,
     start: Instant,
-    last_frame: Instant,
-    fps_accum: f32,
-    fps_frames: u32,
-    fps: f32,
 }
 
 impl Game {
@@ -48,19 +44,7 @@ impl Game {
             screen_width: 800.0,
             screen_height: 600.0,
             start: Instant::now(),
-            last_frame: Instant::now(),
-            fps_accum: 0.0,
-            fps_frames: 0,
-            fps: 0.0,
         })
-    }
-
-    pub fn last_frame(&self) -> Instant {
-        self.last_frame
-    }
-
-    pub fn set_last_frame(&mut self, now: Instant) {
-        self.last_frame = now;
     }
 
     /// Seconds since the game started.
@@ -93,16 +77,6 @@ impl Game {
     }
 
     pub fn update(&mut self, delta_time: f32, input: &InputState) {
-        if delta_time > 0.0 {
-            self.fps_accum += delta_time;
-            self.fps_frames += 1;
-            if self.fps_accum >= 1.0 {
-                self.fps = self.fps_frames as f32 / self.fps_accum;
-                self.fps_accum = 0.0;
-                self.fps_frames = 0;
-            }
-        }
-
         self.camera
             .process_mouse_delta(input.look_delta.x, input.look_delta.y);
         let sprinting = input.sprint && input.move_axes != glam::Vec2::ZERO;
@@ -132,12 +106,12 @@ impl Game {
         self.world.update(self.camera.position)
     }
 
-    pub fn hud_lines(&self, gpu_chunks: usize) -> Vec<String> {
+    pub fn hud_lines(&self, gpu_chunks: usize, fps: f32) -> Vec<String> {
         let p = self.camera.position;
         let biome = self.world.biome_at(p.x.floor() as i32, p.z.floor() as i32);
         vec![
             format!("POS X{:.0} Y{:.0} Z{:.0}", p.x, p.y, p.z),
-            format!("FPS {:.0}", self.fps),
+            format!("FPS {:.0}", fps),
             format!("BIOME {}", biome.name().to_uppercase()),
             format!("MODE {}", if self.player.flying { "FLY" } else { "WALK" }),
             format!("CHUNKS {gpu_chunks}"),
@@ -165,7 +139,7 @@ mod tests {
     #[test]
     fn hud_reports_position_fps_biome_chunks_and_seed() {
         let game = Game::new(u64::MAX).unwrap();
-        let lines = game.hud_lines(7);
+        let lines = game.hud_lines(7, 60.0);
         assert_eq!(lines.len(), 6);
         assert!(lines[0].starts_with("POS "));
         assert!(lines[1].starts_with("FPS "));

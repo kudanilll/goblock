@@ -4,10 +4,12 @@
 //! devices with a Vulkan 1.0 driver. The world and input crates do not depend
 //! on it.
 
+pub mod background_textures;
 pub mod block_textures;
 pub mod font;
 pub mod vk;
 
+pub use background_textures::{BackgroundTextures, BG_HEIGHT, BG_WIDTH};
 pub use block_textures::BlockTextures;
 pub use font::FontKind;
 pub use vk::error::VkError;

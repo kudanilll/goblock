@@ -114,6 +114,13 @@ impl ChunkBuffers {
         }
     }
 
+    /// Free every meshed chunk buffer.
+    pub fn clear(&mut self) {
+        for (_, chunk) in self.chunks.drain() {
+            self.released.push(Retired::Buffer(chunk.vertices));
+        }
+    }
+
     /// Make the shared index buffer hold at least `quads` quads.
     fn reserve_indices(&mut self, device: &Device, quads: u32) -> Result<(), VkError> {
         if quads <= self.index_quads {
