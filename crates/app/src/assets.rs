@@ -1,5 +1,5 @@
-//! Block textures from `assets/textures/blocks/<name>.png`, with generated
-//! placeholders for any file that is missing or unreadable.
+//! Block textures and menu background images loaded from PNG files, with
+//! placeholders for missing textures and fallback background images.
 
 use std::fs::File;
 use std::io::{BufReader, Read};

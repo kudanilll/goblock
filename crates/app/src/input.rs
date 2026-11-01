@@ -133,7 +133,6 @@ impl InputSource for DesktopInput {
             // Mouse Y grows downward on screen; camera pitch grows upward.
             look_delta: Vec2::new(look_delta.x, -look_delta.y),
             sprint,
-            quit: self.is_down(KeyCode::Escape),
         }
     }
 }
@@ -157,7 +156,6 @@ mod tests {
         assert_eq!(state.move_axes, Vec2::ZERO);
         assert_eq!(state.vertical, 0.0);
         assert!(!state.sprint);
-        assert!(!state.quit);
     }
 
     #[test]
@@ -192,13 +190,6 @@ mod tests {
         let mut input = DesktopInput::new();
         press(&mut input, KeyCode::ShiftLeft);
         assert!(input.poll().sprint);
-    }
-
-    #[test]
-    fn escape_requests_quit() {
-        let mut input = DesktopInput::new();
-        press(&mut input, KeyCode::Escape);
-        assert!(input.poll().quit);
     }
 
     #[test]

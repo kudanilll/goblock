@@ -2,7 +2,7 @@
 
 use goblock_render::{draw_text, measure_text, push_rect, FontKind, HudVertex};
 
-/// Core persistent game settings.
+/// Core game settings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     // Video

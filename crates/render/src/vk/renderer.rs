@@ -4,8 +4,9 @@
 //! sky and the opaque and cut-out blocks, into offscreen images. The final
 //! pass copies that scene to the screen and draws the water over it, which
 //! reads the scene for refraction and screen-space reflections, then the
-//! HUD. Lighting, fog and tone mapping happen in the shaders, fed by one
-//! uniform block per frame.
+//! HUD. On menu screens, the background slideshow draws in place of the
+//! scene copy and water. Lighting, fog and tone mapping happen in the shaders,
+//! fed by one uniform block per frame.
 
 use ash::vk;
 use glam::{IVec2, Mat4, Vec3};

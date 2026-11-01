@@ -67,6 +67,7 @@ struct ActiveState {
     mouse_pos: (f32, f32),
     start: std::time::Instant,
     last_frame: std::time::Instant,
+    last_save: std::time::Instant,
     fps_accum: f32,
     fps_frames: u32,
     fps: f32,
@@ -97,6 +98,9 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => {
                 state.save_current_world();
                 event_loop.exit();
+            }
+            WindowEvent::Focused(false) => {
+                state.save_current_world();
             }
             WindowEvent::Resized(size) => {
                 if let Err(e) = state.renderer.resize(size.width, size.height) {
@@ -202,12 +206,7 @@ impl ApplicationHandler for App {
                                     state.mode = menu::AppMode::CreateWorld;
                                 }
                                 menu::SelectWorldAction::Delete(id) => {
-                                    let _ = saves::delete_world(&id);
-                                    state.saved_worlds = saves::list_worlds();
-                                    if state.select_menu.selected >= state.saved_worlds.len() {
-                                        state.select_menu.selected =
-                                            state.saved_worlds.len().saturating_sub(1);
-                                    }
+                                    state.delete_world(&id);
                                 }
                                 menu::SelectWorldAction::Back => {
                                     state.mode = menu::AppMode::Title;
@@ -275,11 +274,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => match state.frame() {
-                Ok(true) => state.window.request_redraw(),
-                Ok(false) => {
-                    state.save_current_world();
-                    event_loop.exit();
-                }
+                Ok(()) => state.window.request_redraw(),
                 Err(e) => state.fail(event_loop, e),
             },
             WindowEvent::KeyboardInput { event: key, .. }
@@ -334,12 +329,7 @@ impl ApplicationHandler for App {
                                     state.mode = menu::AppMode::CreateWorld;
                                 }
                                 menu::SelectWorldAction::Delete(id) => {
-                                    let _ = saves::delete_world(&id);
-                                    state.saved_worlds = saves::list_worlds();
-                                    if state.select_menu.selected >= state.saved_worlds.len() {
-                                        state.select_menu.selected =
-                                            state.saved_worlds.len().saturating_sub(1);
-                                    }
+                                    state.delete_world(&id);
                                 }
                                 menu::SelectWorldAction::Back => {
                                     state.mode = menu::AppMode::Title;
@@ -489,12 +479,15 @@ impl ActiveState {
 
         // If saved worlds is empty, prefill a default world so player has something to test right away
         let saved_worlds = if saved_worlds.is_empty() {
-            let _ = saves::create_world("Survival World", &seed.to_string());
+            if let Err(e) = saves::create_world("Survival World", &seed.to_string()) {
+                eprintln!("goblock: create world error: {e}");
+            }
             saves::list_worlds()
         } else {
             saved_worlds
         };
 
+        let now = std::time::Instant::now();
         Ok(Self {
             renderer,
             window,
@@ -509,8 +502,9 @@ impl ActiveState {
             current_world: None,
             saved_worlds,
             mouse_pos: (0.0, 0.0),
-            start: std::time::Instant::now(),
-            last_frame: std::time::Instant::now(),
+            start: now,
+            last_frame: now,
+            last_save: now,
             fps_accum: 0.0,
             fps_frames: 0,
             fps: 0.0,
@@ -523,23 +517,23 @@ impl ActiveState {
             Ok(mut game) => {
                 game.set_screen_size(size);
                 if meta.player_pos != [0.0, 0.0, 0.0] {
-                    game.player.feet = glam::DVec3::new(
-                        meta.player_pos[0] as f64,
-                        meta.player_pos[1] as f64,
-                        meta.player_pos[2] as f64,
-                    );
+                    game.player.feet = glam::DVec3::from_array(meta.player_pos);
                     game.camera.position = game.player.eye();
                     game.player.flying = meta.player_flying;
                     game.camera
                         .set_orientation(meta.player_yaw, meta.player_pitch);
                     game.spawn_settled = true;
                 }
+                meta.format_version = saves::SAVE_FORMAT_VERSION;
                 meta.last_played = std::time::SystemTime::now()
                     .duration_since(std::time::SystemTime::UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
-                let _ = saves::save_world(&meta);
+                if let Err(e) = saves::save_world(&meta) {
+                    eprintln!("goblock: save world error: {e}");
+                }
 
+                self.last_save = std::time::Instant::now();
                 self.renderer.clear_chunks();
                 self.current_world = Some(meta);
                 self.game = Some(game);
@@ -554,20 +548,31 @@ impl ActiveState {
     }
 
     fn save_current_world(&mut self) {
+        self.last_save = std::time::Instant::now();
         if let (Some(game), Some(meta)) = (self.game.as_ref(), self.current_world.as_mut()) {
-            meta.player_pos = [
-                game.player.feet.x as f32,
-                game.player.feet.y as f32,
-                game.player.feet.z as f32,
-            ];
-            meta.player_yaw = game.camera.yaw();
-            meta.player_pitch = game.camera.pitch();
-            meta.player_flying = game.player.flying;
+            if game.spawn_settled {
+                meta.player_pos = game.player.feet.to_array();
+                meta.player_yaw = game.camera.yaw();
+                meta.player_pitch = game.camera.pitch();
+                meta.player_flying = game.player.flying;
+            }
             meta.last_played = std::time::SystemTime::now()
                 .duration_since(std::time::SystemTime::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            let _ = saves::save_world(meta);
+            if let Err(e) = saves::save_world(meta) {
+                eprintln!("goblock: save world error: {e}");
+            }
+        }
+    }
+
+    fn delete_world(&mut self, id: &str) {
+        if let Err(e) = saves::delete_world(id) {
+            eprintln!("goblock: delete world error: {e}");
+        }
+        self.saved_worlds = saves::list_worlds();
+        if self.select_menu.selected >= self.saved_worlds.len() {
+            self.select_menu.selected = self.saved_worlds.len().saturating_sub(1);
         }
     }
 
@@ -581,8 +586,8 @@ impl ActiveState {
         self.input.release_cursor_grab(&self.window);
     }
 
-    /// Run one frame. Returns `Ok(false)` once the player asks to quit.
-    fn frame(&mut self) -> Result<bool, goblock_render::VkError> {
+    /// Advance the world and draw one frame.
+    fn frame(&mut self) -> Result<(), goblock_render::VkError> {
         let now = std::time::Instant::now();
         let delta = now - self.last_frame;
         self.last_frame = now;
@@ -617,6 +622,9 @@ impl ActiveState {
                         WorldEvent::Unloaded(pos) => self.renderer.remove_chunk(pos),
                     }
                 }
+            }
+            if saves::autosave_due(self.last_save, now) {
+                self.save_current_world();
             }
         }
 
@@ -701,8 +709,7 @@ impl ActiveState {
             }
         };
 
-        self.renderer.draw_frame(&view, &ui_vertices)?;
-        Ok(true)
+        self.renderer.draw_frame(&view, &ui_vertices)
     }
 
     fn fail(&mut self, event_loop: &ActiveEventLoop, e: impl std::fmt::Display) {
@@ -711,8 +718,8 @@ impl ActiveState {
     }
 }
 
-/// Seed for the world: from `arg` when one is given, otherwise a fresh
-/// random one, so every launch starts in a new world.
+/// Seed for the starter world: from `arg` when one is given, otherwise a fresh
+/// random one.
 fn world_seed(arg: Option<&str>) -> u64 {
     match arg {
         Some(text) => parse_seed(text),

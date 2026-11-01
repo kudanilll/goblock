@@ -42,7 +42,7 @@ The game opens on the title menu. `Play` leads to the world list, where you can 
 
 A new world takes a name and an optional seed. A blank seed picks a random one. Numbers (negative ones too) are used as they are, and any other text always maps to the same world. The HUD and the world list both show the seed, and either form can be typed in again to get the same terrain. The player starts on the ground at a dry, fairly flat spot near the origin.
 
-Each world is a folder in `saves/`, under the directory the game runs from. Its `world.json` holds the name, seed, timestamps and the player's position, view direction and flying state. The terrain is rebuilt from the seed, so nothing else needs storing. The game writes this file when you start the world, close the window, quit from the settings menu or return to the title menu. It does not save while you play. `Delete` in the world list removes the folder straight away, with no confirmation.
+Each world is a folder in `saves/`, under the directory the game runs from. Its `world.json` holds the format version, name, seed, timestamps and the player's position, view direction and flying state. The terrain is rebuilt from the seed, so nothing else needs storing. The game writes this file when you start the world, close the window, quit from the settings menu, return to the title menu, lose window focus, and automatically every 60 seconds while playing. `Delete` in the world list turns into `Confirm` on the first click and removes the folder on the second click.
 
 If `saves/` has no worlds at startup, the game creates one called Survival World. A seed passed on the command line goes to that world and is ignored once saves exist:
 
@@ -93,7 +93,7 @@ Block textures are PNG files in `assets/textures/blocks/`, one per name in `gobl
 
 Menu backgrounds are PNG files in `assets/backgrounds/`. The game loads all of them in name order and scales each one to 640×360. The title, world list and new world screens, and settings opened from the title, show them as a slideshow: each image holds for 8 seconds, and the last 1.5 seconds crossfade into the next. With no images, those screens show a plain dark colour.
 
-Text uses two TrueType fonts from `assets/fonts/`, embedded in the binary at build time: `eas-vhs.ttf` for the HUD and body text, and `upheavtt.ttf` for titles and headings. Only printable ASCII has glyphs, so any other character typed into a world name does not show.
+Text uses two TrueType fonts from `assets/fonts/`, embedded in the binary at build time: `eas-vhs.ttf` for the HUD and body text, and `upheavtt.ttf` for titles and headings. The new world screen only accepts printable ASCII.
 
 ## Shaders
 

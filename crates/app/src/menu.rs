@@ -323,6 +323,7 @@ pub struct SelectWorldMenu {
     pub hovered_create: bool,
     pub hovered_delete: bool,
     pub hovered_back: bool,
+    pub pending_delete: Option<String>,
 }
 
 impl SelectWorldMenu {
@@ -334,6 +335,7 @@ impl SelectWorldMenu {
             hovered_create: false,
             hovered_delete: false,
             hovered_back: false,
+            pending_delete: None,
         }
     }
 
@@ -356,7 +358,10 @@ impl SelectWorldMenu {
             let cy = list_y + i as f32 * (card_h + card_gap);
             if (list_x..=list_x + list_w).contains(&x) && (cy..=cy + card_h).contains(&y) {
                 self.hovered_row = Some(i);
-                self.selected = i;
+                if self.selected != i {
+                    self.selected = i;
+                    self.pending_delete = None;
+                }
             }
         }
 
@@ -395,14 +400,17 @@ impl SelectWorldMenu {
         self.handle_mouse_move(worlds, x, y, width, height);
 
         if self.hovered_back {
+            self.pending_delete = None;
             return SelectWorldAction::Back;
         }
 
         if self.hovered_create {
+            self.pending_delete = None;
             return SelectWorldAction::OpenCreate;
         }
 
         if self.hovered_play {
+            self.pending_delete = None;
             if let Some(w) = worlds.get(self.selected) {
                 return SelectWorldAction::Play(w.clone());
             }
@@ -410,12 +418,23 @@ impl SelectWorldMenu {
 
         if self.hovered_delete {
             if let Some(w) = worlds.get(self.selected) {
-                return SelectWorldAction::Delete(w.id.clone());
+                if self.pending_delete.as_deref() == Some(&w.id) {
+                    self.pending_delete = None;
+                    return SelectWorldAction::Delete(w.id.clone());
+                } else {
+                    self.pending_delete = Some(w.id.clone());
+                    return SelectWorldAction::None;
+                }
             }
+        } else {
+            self.pending_delete = None;
         }
 
         if let Some(idx) = self.hovered_row {
-            self.selected = idx;
+            if self.selected != idx {
+                self.selected = idx;
+                self.pending_delete = None;
+            }
         }
 
         SelectWorldAction::None
@@ -428,20 +447,36 @@ impl SelectWorldMenu {
     ) -> SelectWorldAction {
         use winit::keyboard::KeyCode;
         match key {
-            KeyCode::Escape => SelectWorldAction::Back,
+            KeyCode::Escape => {
+                if self.pending_delete.is_some() {
+                    self.pending_delete = None;
+                    SelectWorldAction::None
+                } else {
+                    SelectWorldAction::Back
+                }
+            }
             KeyCode::ArrowUp => {
                 if !worlds.is_empty() {
-                    self.selected = (self.selected + worlds.len() - 1) % worlds.len();
+                    let next = (self.selected + worlds.len() - 1) % worlds.len();
+                    if self.selected != next {
+                        self.selected = next;
+                        self.pending_delete = None;
+                    }
                 }
                 SelectWorldAction::None
             }
             KeyCode::ArrowDown => {
                 if !worlds.is_empty() {
-                    self.selected = (self.selected + 1) % worlds.len();
+                    let next = (self.selected + 1) % worlds.len();
+                    if self.selected != next {
+                        self.selected = next;
+                        self.pending_delete = None;
+                    }
                 }
                 SelectWorldAction::None
             }
             KeyCode::Enter => {
+                self.pending_delete = None;
                 if let Some(w) = worlds.get(self.selected) {
                     SelectWorldAction::Play(w.clone())
                 } else {
@@ -562,7 +597,7 @@ impl SelectWorldMenu {
         let b_create_x = b_play_x + b_play_w + 14.0;
         let b_create_w = 180.0;
         let b_del_x = b_create_x + b_create_w + 14.0;
-        let b_del_w = 120.0;
+        let b_del_w = 110.0;
         let b_back_x = width - 140.0;
         let b_back_w = 100.0;
 
@@ -655,10 +690,15 @@ impl SelectWorldMenu {
             [255, 255, 255, 255],
         );
 
-        // Button 3: [ DELETE ]
+        // Button 3: [ DELETE ] or [ CONFIRM ]
         if has_world {
-            let del_bg = if self.hovered_delete {
-                [210, 45, 45, 240]
+            let is_armed = worlds
+                .get(self.selected)
+                .map(|w| self.pending_delete.as_deref() == Some(&w.id))
+                .unwrap_or(false);
+            let d_text = if is_armed { "CONFIRM" } else { "DELETE" };
+            let del_bg = if is_armed || self.hovered_delete {
+                [220, 45, 45, 240]
             } else {
                 [140, 30, 30, 190]
             };
@@ -672,7 +712,15 @@ impl SelectWorldMenu {
                 1.0,
                 [100, 20, 20, 255],
             );
-            let d_text = "DELETE";
+            push_rect(&mut out, b_del_x, btn_y, 1.0, btn_h, [255, 120, 120, 255]);
+            push_rect(
+                &mut out,
+                b_del_x + b_del_w - 1.0,
+                btn_y,
+                1.0,
+                btn_h,
+                [100, 20, 20, 255],
+            );
             let dtw = measure_text(FontKind::Headline, d_text, 0.65);
             let dtx = b_del_x + (b_del_w - dtw) * 0.5;
             draw_text(
@@ -849,7 +897,7 @@ impl CreateWorldMenu {
     }
 
     pub fn handle_char_input(&mut self, ch: char) {
-        if ch.is_control() {
+        if !(32..=126).contains(&(ch as u32)) {
             return;
         }
         if self.active_field == 0 {
@@ -1156,6 +1204,77 @@ mod tests {
 
         let play_action = menu.handle_key_down(&worlds, winit::keyboard::KeyCode::Enter);
         assert_eq!(play_action, SelectWorldAction::Play(worlds[1].clone()));
+    }
+
+    #[test]
+    fn delete_needs_two_clicks_on_the_same_world() {
+        let mut menu = SelectWorldMenu::new();
+        let worlds = vec![
+            WorldMeta::new("w1".into(), "World 1".into(), 100),
+            WorldMeta::new("w2".into(), "World 2".into(), 200),
+        ];
+        let first_click = menu.handle_mouse_down(&worlds, 490.0, 570.0, 800.0, 600.0);
+        assert_eq!(first_click, SelectWorldAction::None);
+        assert_eq!(menu.pending_delete.as_deref(), Some("w1"));
+
+        let second_click = menu.handle_mouse_down(&worlds, 490.0, 570.0, 800.0, 600.0);
+        assert_eq!(second_click, SelectWorldAction::Delete("w1".into()));
+        assert_eq!(menu.pending_delete, None);
+    }
+
+    #[test]
+    fn changing_selection_cancels_delete() {
+        let mut menu = SelectWorldMenu::new();
+        let worlds = vec![
+            WorldMeta::new("w1".into(), "World 1".into(), 100),
+            WorldMeta::new("w2".into(), "World 2".into(), 200),
+        ];
+        menu.handle_mouse_down(&worlds, 490.0, 570.0, 800.0, 600.0);
+        assert!(menu.pending_delete.is_some());
+
+        menu.handle_key_down(&worlds, winit::keyboard::KeyCode::ArrowDown);
+        assert_eq!(menu.selected, 1);
+        assert_eq!(menu.pending_delete, None);
+
+        menu.handle_mouse_down(&worlds, 490.0, 570.0, 800.0, 600.0);
+        assert_eq!(menu.pending_delete.as_deref(), Some("w2"));
+
+        menu.handle_mouse_move(&worlds, 100.0, 100.0, 800.0, 600.0);
+        assert_eq!(menu.selected, 0);
+        assert_eq!(menu.pending_delete, None);
+    }
+
+    #[test]
+    fn escape_cancels_delete_before_leaving() {
+        let mut menu = SelectWorldMenu::new();
+        let worlds = vec![WorldMeta::new("w1".into(), "World 1".into(), 100)];
+
+        menu.handle_mouse_down(&worlds, 490.0, 570.0, 800.0, 600.0);
+        assert!(menu.pending_delete.is_some());
+
+        let action = menu.handle_key_down(&worlds, winit::keyboard::KeyCode::Escape);
+        assert_eq!(action, SelectWorldAction::None);
+        assert_eq!(menu.pending_delete, None);
+
+        let action2 = menu.handle_key_down(&worlds, winit::keyboard::KeyCode::Escape);
+        assert_eq!(action2, SelectWorldAction::Back);
+    }
+
+    #[test]
+    fn non_ascii_input_is_ignored() {
+        let mut menu = CreateWorldMenu::new();
+        menu.name_input.clear();
+        for ch in ['a', 'é', ' ', '世', '~'] {
+            menu.handle_char_input(ch);
+        }
+        assert_eq!(menu.name_input, "a ~");
+
+        menu.active_field = 1;
+        menu.seed_input.clear();
+        for ch in ['1', 'é', ' ', '世', '~'] {
+            menu.handle_char_input(ch);
+        }
+        assert_eq!(menu.seed_input, "1 ~");
     }
 
     #[test]

@@ -22,7 +22,6 @@ pub struct InputState {
     /// Mouse look delta in screen pixels for this frame.
     pub look_delta: Vec2,
     pub sprint: bool,
-    pub quit: bool,
 }
 
 /// Anything that can produce an [`InputState`]: keyboard and mouse today,
@@ -51,7 +50,6 @@ mod tests {
         assert_eq!(s.vertical, 0.0);
         assert_eq!(s.look_delta, Vec2::ZERO);
         assert!(!s.sprint);
-        assert!(!s.quit);
     }
 
     #[test]
