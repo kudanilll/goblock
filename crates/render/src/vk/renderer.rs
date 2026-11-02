@@ -1237,25 +1237,25 @@ mod tests {
 
     #[test]
     fn common_shader_declares_caustics_helper() {
-        let src = include_str!("../../../../shaders/vulkan/common.glsl");
+        let src = include_str!("../../../../shaders/common.glsl");
         assert!(src.contains("float caustics(vec2 worldXz, float time)"));
     }
 
     #[test]
     fn composite_shader_includes_common_definitions() {
-        let src = include_str!("../../../../shaders/vulkan/composite.frag");
+        let src = include_str!("../../../../shaders/fragment/composite.glsl");
         assert!(src.contains("#include \"common.glsl\""));
     }
 
     #[test]
     fn underwater_godrays_bounds_upward_rays_to_water_surface() {
-        let src = include_str!("../../../../shaders/vulkan/common.glsl");
+        let src = include_str!("../../../../shaders/common.glsl");
         assert!(src.contains("toSurface"));
     }
 
     #[test]
     fn shader_water_level_matches_the_mesh() {
-        let src = include_str!("../../../../shaders/vulkan/common.glsl");
+        let src = include_str!("../../../../shaders/common.glsl");
         let level: f32 = src
             .lines()
             .find_map(|line| line.strip_prefix("const float WATER_LEVEL = "))

@@ -99,7 +99,7 @@ Text uses two TrueType fonts from `assets/fonts/`, embedded in the binary at bui
 
 ## Shaders
 
-GLSL lives in `shaders/vulkan/` and is compiled by `crates/render/build.rs` into `${OUT_DIR}` with `glslc`, then embedded in the binary. The shaders target Vulkan 1.0, so the output is SPIR-V 1.0. Debug builds turn on the validation layer when it is installed and print its messages to stderr.
+GLSL lives in `shaders/` and is compiled by `crates/render/build.rs` into `${OUT_DIR}` with `glslc`, then embedded in the binary. Vertex shaders are in `shaders/vertex/` and fragment shaders in `shaders/fragment/`, all with the `.glsl` extension. Shared includes (`common.glsl`, `scene.glsl`) sit at the `shaders/` root. The shaders target Vulkan 1.0, so the output is SPIR-V 1.0. Debug builds turn on the validation layer when it is installed and print its messages to stderr.
 
 Lighting is done in linear HDR and tone mapped at the end: sunlight with soft shadows from a sun shadow map, sky and ground light dimmed by ambient occlusion, a scattering sky with a sun disc, and fog that takes the colour of the sky behind the terrain. Water is drawn after the rest of the scene and reads it back: the floor shows through with ripples bending it, fading with the depth of water in between, and the surface reflects the terrain with screen-space reflections, falling back to the sky where the reflected ray leaves the screen. It reflects more at grazing angles and catches the sun. Moving caustics light anything under water. With the camera under water, the view fades into murky blue-green, the picture ripples and shafts of sunlight fall through it. Settings opened from a world blurs and darkens the game behind the menu.
 
@@ -131,7 +131,11 @@ crates/
   input/    camera, player movement and collision, and the InputSource trait
   app/      window, frame loop, desktop input, asset loading, menus, settings,
             world saves
-shaders/vulkan/     GLSL sources, compiled to SPIR-V at build time
+shaders/            GLSL sources, compiled to SPIR-V at build time
+  common.glsl       shared uniforms, sky, lighting, fog
+  scene.glsl        scene colour and depth samplers
+  vertex/           vertex shaders
+  fragment/         fragment shaders
 assets/textures/    block textures
 assets/backgrounds/ menu slideshow images
 assets/fonts/       TrueType fonts, embedded at build time

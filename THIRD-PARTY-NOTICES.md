@@ -30,7 +30,7 @@ THE SOFTWARE.
 
 ## Revelation
 
-The screen-space ray march in `shaders/vulkan/water.frag` (`traceReflection`) is adapted from the screen-space ray tracing in the Revelation shader pack. GoBlock changed it: it marches a fixed number of jittered steps in uv and depth, accepts a hit only where the scene surface lies inside the last step, refines it by bisection, and runs only for water surfaces.
+The screen-space ray march in `shaders/fragment/water.glsl` (`traceReflection`) is adapted from the screen-space ray tracing in the Revelation shader pack. GoBlock changed it: it marches a fixed number of jittered steps in uv and depth, accepts a hit only where the scene surface lies inside the last step, refines it by bisection, and runs only for water surfaces.
 
 Revelation is licensed under the Apache License, Version 2.0. The full license text is in [licenses/Revelation-Apache-2.0.txt](licenses/Revelation-Apache-2.0.txt). You may obtain a copy of the License at <http://www.apache.org/licenses/LICENSE-2.0>. Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
