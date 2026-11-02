@@ -150,6 +150,10 @@ The `render` crate takes a `RawWindowHandle` and never depends on `winit`, and `
 
 Vulkan is not available on every Android device. Devices without a Vulkan 1.0 driver cannot run this build.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, architectural rules, and pull request guidelines.
+
 ## License
 
 MIT. See [LICENSE](LICENSE). Copyright (c) 2024 Achmad Daniel Syahputra.

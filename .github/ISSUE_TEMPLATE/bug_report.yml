@@ -1,0 +1,94 @@
+name: Bug report
+description: Report a crash, rendering defect, or unexpected behaviour.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please search existing issues before submitting to avoid duplicates.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear explanation of what went wrong.
+      placeholder: Describe the problem here.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: The sequence of actions that triggers the problem.
+      placeholder: |
+        1. Run `cargo run --release`
+        2. Create a new world with seed ...
+        3. Walk towards ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What should have happened instead.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux (X11)
+        - Linux (Wayland)
+        - macOS (MoltenVK)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU model and driver version
+      description: Example: NVIDIA RTX 3070 (Driver 560.94) or AMD Radeon 6800XT (Mesa 24.1).
+      placeholder: GPU model and driver version
+    validations:
+      required: true
+
+  - type: input
+    id: rust-version
+    attributes:
+      label: Rust version
+      description: Output of `rustc --version`.
+      placeholder: "rustc 1.85.0 (4d91de4e4 2025-02-17)"
+    validations:
+      required: true
+
+  - type: input
+    id: vulkan-sdk
+    attributes:
+      label: Vulkan SDK version
+      description: Vulkan SDK or glslc version if known.
+      placeholder: "1.3.296.0"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Terminal output or logs
+      description: Paste any error messages, backtraces (RUST_BACKTRACE=1), or validation layer logs.
+      render: shell
+
+  - type: checkboxes
+    id: checklists
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I searched existing issues and found no duplicate report.
+          required: true
+        - label: I reproduced this issue on the latest `master` branch.
+          required: true
