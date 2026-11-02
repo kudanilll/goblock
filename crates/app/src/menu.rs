@@ -1,93 +1,78 @@
 //! Title screen, World Select, and Create World menus.
 
 use crate::saves::WorldMeta;
+use crate::screens::Transition;
+use crate::ui::{self, Rect, Rgba, Widget};
 use goblock_render::{draw_text, measure_text, push_rect, FontKind, HudVertex};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppMode {
-    Title,
-    SelectWorld,
-    CreateWorld,
-    Playing,
-    Settings { from_title: bool },
-}
+const WHITE: Rgba = [255, 255, 255, 255];
+const GREEN: Rgba = [80, 230, 160, 255];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MainMenuAction {
-    None,
-    OpenSelectWorld,
-    OpenSettings,
+enum TitleItem {
+    Play,
+    Settings,
     Quit,
 }
 
 pub struct MainMenu {
-    pub hovered_play: bool,
-    pub hovered_settings: bool,
-    pub hovered_quit: bool,
+    hovered: Option<TitleItem>,
 }
 
 impl MainMenu {
     pub fn new() -> Self {
-        Self {
-            hovered_play: false,
-            hovered_settings: false,
-            hovered_quit: false,
-        }
+        Self { hovered: None }
+    }
+
+    fn widgets(width: f32, height: f32) -> [Widget<TitleItem>; 3] {
+        let y = height - 57.0;
+        let quit = Rect::new(width - 150.0, y, 110.0, 44.0);
+        let settings = Rect::new(quit.x - 144.0, y, 130.0, 44.0);
+        let play = Rect::new(settings.x - 178.0, y, 160.0, 44.0);
+        [
+            Widget {
+                rect: play,
+                action: TitleItem::Play,
+            },
+            Widget {
+                rect: settings,
+                action: TitleItem::Settings,
+            },
+            Widget {
+                rect: quit,
+                action: TitleItem::Quit,
+            },
+        ]
     }
 
     pub fn handle_mouse_move(&mut self, x: f32, y: f32, width: f32, height: f32) {
-        let bot_y = height - 70.0;
-        let right_margin = width - 40.0;
-
-        let quit_w = 110.0;
-        let settings_w = 130.0;
-        let play_w = 160.0;
-        let btn_h = 44.0;
-        let btn_y = bot_y + 12.0;
-
-        let quit_x = right_margin - quit_w;
-        let settings_x = quit_x - settings_w - 14.0;
-        let play_x = settings_x - play_w - 18.0;
-
-        self.hovered_quit =
-            (quit_x..=quit_x + quit_w).contains(&x) && (btn_y..=btn_y + btn_h).contains(&y);
-        self.hovered_settings = (settings_x..=settings_x + settings_w).contains(&x)
-            && (btn_y..=btn_y + btn_h).contains(&y);
-        self.hovered_play =
-            (play_x..=play_x + play_w).contains(&x) && (btn_y..=btn_y + btn_h).contains(&y);
+        self.hovered = ui::hit(&Self::widgets(width, height), x, y);
     }
 
-    pub fn handle_mouse_down(&mut self, x: f32, y: f32, width: f32, height: f32) -> MainMenuAction {
+    pub fn handle_mouse_down(&mut self, x: f32, y: f32, width: f32, height: f32) -> Transition {
         self.handle_mouse_move(x, y, width, height);
-        if self.hovered_play {
-            MainMenuAction::OpenSelectWorld
-        } else if self.hovered_settings {
-            MainMenuAction::OpenSettings
-        } else if self.hovered_quit {
-            MainMenuAction::Quit
-        } else {
-            MainMenuAction::None
+        match self.hovered {
+            Some(TitleItem::Play) => Transition::OpenWorldList,
+            Some(TitleItem::Settings) => Transition::OpenSettings { from_title: true },
+            Some(TitleItem::Quit) => Transition::Quit,
+            None => Transition::None,
         }
     }
 
-    pub fn handle_key_down(&mut self, key: winit::keyboard::KeyCode) -> MainMenuAction {
+    pub fn handle_key_down(&mut self, key: winit::keyboard::KeyCode) -> Transition {
         use winit::keyboard::KeyCode;
         match key {
-            KeyCode::Enter | KeyCode::Space => MainMenuAction::OpenSelectWorld,
-            KeyCode::KeyS => MainMenuAction::OpenSettings,
-            KeyCode::Escape => MainMenuAction::Quit,
-            _ => MainMenuAction::None,
+            KeyCode::Enter | KeyCode::Space => Transition::OpenWorldList,
+            KeyCode::KeyS => Transition::OpenSettings { from_title: true },
+            KeyCode::Escape => Transition::Quit,
+            _ => Transition::None,
         }
     }
 
     pub fn build_vertices(&self, fps: f32, width: f32, height: f32) -> Vec<HudVertex> {
         let mut out = Vec::with_capacity(4096);
 
-        // 1. Top Bar: Dark transparent gradient banner with title
-        push_rect(&mut out, 0.0, 0.0, width, 80.0, [0, 0, 0, 110]);
-        push_rect(&mut out, 0.0, 79.0, width, 1.0, [45, 55, 75, 120]);
-
-        // Game Title Logo: "GOBLOCK" (upheavtt.ttf)
+        ui::header_bar(&mut out, width, 80.0, [0, 0, 0, 110], [45, 55, 75, 120]);
         draw_text(
             &mut out,
             FontKind::Headline,
@@ -95,10 +80,8 @@ impl MainMenu {
             36.0,
             20.0,
             1.5,
-            [255, 255, 255, 255],
+            WHITE,
         );
-
-        // Subtitle / Version tag (eas-vhs.ttf)
         draw_text(
             &mut out,
             FontKind::Regular,
@@ -106,7 +89,7 @@ impl MainMenu {
             210.0,
             27.0,
             0.9,
-            [80, 230, 160, 255],
+            GREEN,
         );
         draw_text(
             &mut out,
@@ -118,16 +101,19 @@ impl MainMenu {
             [150, 165, 185, 200],
         );
 
-        // 2. Bottom Navigation & Action Bar
-        let bot_h = 70.0;
-        let bot_y = height - bot_h;
-        push_rect(&mut out, 0.0, bot_y, width, bot_h, [0, 0, 0, 140]);
-        push_rect(&mut out, 0.0, bot_y, width, 1.0, [50, 60, 80, 160]);
+        let bot_y = height - 70.0;
+        ui::action_bar(
+            &mut out,
+            width,
+            height,
+            70.0,
+            [0, 0, 0, 140],
+            [50, 60, 80, 160],
+        );
 
-        // Left info block
         let dot_x = 36.0;
         let dot_y = bot_y + 24.0;
-        push_rect(&mut out, dot_x, dot_y + 4.0, 8.0, 8.0, [80, 230, 160, 255]);
+        push_rect(&mut out, dot_x, dot_y + 4.0, 8.0, 8.0, GREEN);
         draw_text(
             &mut out,
             FontKind::Headline,
@@ -135,9 +121,8 @@ impl MainMenu {
             dot_x + 16.0,
             dot_y + 2.0,
             0.65,
-            [255, 255, 255, 255],
+            WHITE,
         );
-
         draw_text(
             &mut out,
             FontKind::Regular,
@@ -148,156 +133,80 @@ impl MainMenu {
             [170, 185, 205, 220],
         );
 
-        // Center: FPS
-        let fps_text = format!("{:.0} FPS", fps);
         draw_text(
             &mut out,
             FontKind::Regular,
-            &fps_text,
+            &format!("{:.0} FPS", fps),
             width * 0.46,
             bot_y + 28.0,
             0.9,
             [140, 155, 175, 180],
         );
 
-        // Right Action Buttons
-        let right_margin = width - 40.0;
-        let quit_w = 110.0;
-        let settings_w = 130.0;
-        let play_w = 160.0;
-        let btn_h = 44.0;
-        let btn_y = bot_y + 13.0;
-
-        let quit_x = right_margin - quit_w;
-        let settings_x = quit_x - settings_w - 14.0;
-        let play_x = settings_x - play_w - 18.0;
-
-        // Button 1: [ PLAY ] (Vibrant glowing cyan/lime accent)
-        let play_bg = if self.hovered_play {
-            [95, 245, 175, 255]
-        } else {
-            [80, 230, 160, 230]
-        };
-        push_rect(&mut out, play_x, btn_y, play_w, btn_h, play_bg);
-        push_rect(&mut out, play_x, btn_y, play_w, 2.0, [180, 255, 220, 255]);
-        push_rect(
-            &mut out,
-            play_x,
-            btn_y + btn_h - 2.0,
-            play_w,
-            2.0,
-            [40, 160, 100, 255],
-        );
-        push_rect(&mut out, play_x, btn_y, 2.0, btn_h, [180, 255, 220, 255]);
-        push_rect(
-            &mut out,
-            play_x + play_w - 2.0,
-            btn_y,
-            2.0,
-            btn_h,
-            [40, 160, 100, 255],
-        );
-
-        let play_text = "PLAY";
-        let pt_w = measure_text(FontKind::Headline, play_text, 1.1);
-        let pt_x = play_x + (play_w - pt_w) * 0.5;
-        draw_text(
-            &mut out,
-            FontKind::Headline,
-            play_text,
-            pt_x,
-            btn_y + 9.0,
-            1.1,
-            [15, 30, 20, 255],
-        );
-
-        // Button 2: [ SETTINGS ]
-        let set_bg = if self.hovered_settings {
-            [40, 52, 72, 220]
-        } else {
-            [20, 26, 38, 160]
-        };
-        push_rect(&mut out, settings_x, btn_y, settings_w, btn_h, set_bg);
-        let set_border = if self.hovered_settings {
-            [80, 160, 240, 255]
-        } else {
-            [55, 65, 85, 180]
-        };
-        push_rect(&mut out, settings_x, btn_y, settings_w, 1.0, set_border);
-        push_rect(
-            &mut out,
-            settings_x,
-            btn_y + btn_h - 1.0,
-            settings_w,
-            1.0,
-            set_border,
-        );
-        push_rect(&mut out, settings_x, btn_y, 1.0, btn_h, set_border);
-        push_rect(
-            &mut out,
-            settings_x + settings_w - 1.0,
-            btn_y,
-            1.0,
-            btn_h,
-            set_border,
-        );
-
-        let set_text = "SETTINGS";
-        let st_w = measure_text(FontKind::Headline, set_text, 0.75);
-        let st_x = settings_x + (settings_w - st_w) * 0.5;
-        draw_text(
-            &mut out,
-            FontKind::Headline,
-            set_text,
-            st_x,
-            btn_y + 12.0,
-            0.75,
-            [255, 255, 255, 255],
-        );
-
-        // Button 3: [ QUIT ]
-        let quit_bg = if self.hovered_quit {
-            [50, 25, 25, 220]
-        } else {
-            [25, 20, 22, 160]
-        };
-        push_rect(&mut out, quit_x, btn_y, quit_w, btn_h, quit_bg);
-        let quit_border = if self.hovered_quit {
-            [240, 80, 80, 255]
-        } else {
-            [75, 50, 55, 160]
-        };
-        push_rect(&mut out, quit_x, btn_y, quit_w, 1.0, quit_border);
-        push_rect(
-            &mut out,
-            quit_x,
-            btn_y + btn_h - 1.0,
-            quit_w,
-            1.0,
-            quit_border,
-        );
-        push_rect(&mut out, quit_x, btn_y, 1.0, btn_h, quit_border);
-        push_rect(
-            &mut out,
-            quit_x + quit_w - 1.0,
-            btn_y,
-            1.0,
-            btn_h,
-            quit_border,
-        );
-
-        let qt_text = "QUIT";
-        let qt_w = measure_text(FontKind::Headline, qt_text, 0.75);
-        let qt_x = quit_x + (quit_w - qt_w) * 0.5;
-        draw_text(
-            &mut out,
-            FontKind::Headline,
-            qt_text,
-            qt_x,
-            btn_y + 12.0,
-            0.75,
-            [220, 225, 235, 240],
-        );
+        for widget in Self::widgets(width, height) {
+            let hovered = self.hovered == Some(widget.action);
+            let r = widget.rect;
+            match widget.action {
+                TitleItem::Play => {
+                    let bg = if hovered {
+                        [95, 245, 175, 255]
+                    } else {
+                        [80, 230, 160, 230]
+                    };
+                    ui::panel(
+                        &mut out,
+                        r,
+                        bg,
+                        [180, 255, 220, 255],
+                        [40, 160, 100, 255],
+                        2.0,
+                    );
+                    ui::centered_text(
+                        &mut out,
+                        FontKind::Headline,
+                        "PLAY",
+                        r,
+                        9.0,
+                        1.1,
+                        [15, 30, 20, 255],
+                    );
+                }
+                TitleItem::Settings => {
+                    let (bg, border) = if hovered {
+                        ([40, 52, 72, 220], [80, 160, 240, 255])
+                    } else {
+                        ([20, 26, 38, 160], [55, 65, 85, 180])
+                    };
+                    ui::outlined(&mut out, r, bg, border);
+                    ui::centered_text(
+                        &mut out,
+                        FontKind::Headline,
+                        "SETTINGS",
+                        r,
+                        12.0,
+                        0.75,
+                        WHITE,
+                    );
+                }
+                TitleItem::Quit => {
+                    let (bg, border) = if hovered {
+                        ([50, 25, 25, 220], [240, 80, 80, 255])
+                    } else {
+                        ([25, 20, 22, 160], [75, 50, 55, 160])
+                    };
+                    ui::outlined(&mut out, r, bg, border);
+                    ui::centered_text(
+                        &mut out,
+                        FontKind::Headline,
+                        "QUIT",
+                        r,
+                        12.0,
+                        0.75,
+                        [220, 225, 235, 240],
+                    );
+                }
+            }
+        }
 
         out
     }
@@ -307,22 +216,33 @@ impl MainMenu {
 // SELECT WORLD MENU
 // ==========================================
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum SelectWorldAction {
-    None,
-    Play(WorldMeta),
-    OpenCreate,
-    Delete(String),
+const LIST_TOP: f32 = 80.0;
+const ROW_HEIGHT: f32 = 60.0;
+const ROW_STEP: f32 = 68.0;
+/// Rows stop this far above the bottom of the screen, clear of the action bar.
+const LIST_BOTTOM_MARGIN: f32 = 70.0;
+
+/// How many world rows fit on the screen. Never zero, so the selected world
+/// always has a row even in a very short window.
+fn visible_rows(height: f32) -> usize {
+    let space = height - LIST_TOP - LIST_BOTTOM_MARGIN - ROW_HEIGHT;
+    ((space / ROW_STEP).floor() as usize + 1).max(1)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectItem {
+    Play,
+    Create,
+    Delete,
     Back,
+    Row(usize),
 }
 
 pub struct SelectWorldMenu {
     pub selected: usize,
-    pub hovered_row: Option<usize>,
-    pub hovered_play: bool,
-    pub hovered_create: bool,
-    pub hovered_delete: bool,
-    pub hovered_back: bool,
+    /// First listed world. [`Self::first_row`] keeps the selection in view.
+    scroll: usize,
+    hovered: Option<SelectItem>,
     pub pending_delete: Option<String>,
 }
 
@@ -330,13 +250,60 @@ impl SelectWorldMenu {
     pub fn new() -> Self {
         Self {
             selected: 0,
-            hovered_row: None,
-            hovered_play: false,
-            hovered_create: false,
-            hovered_delete: false,
-            hovered_back: false,
+            scroll: 0,
+            hovered: None,
             pending_delete: None,
         }
+    }
+
+    fn first_row(&self, count: usize, height: f32) -> usize {
+        let rows = visible_rows(height);
+        let first = self
+            .scroll
+            .min(self.selected)
+            .max((self.selected + 1).saturating_sub(rows));
+        first.min(count.saturating_sub(rows))
+    }
+
+    /// Selects a world. A delete armed for another world does not carry over.
+    fn select(&mut self, index: usize, count: usize, height: f32) {
+        if self.selected != index {
+            self.selected = index;
+            self.pending_delete = None;
+        }
+        self.scroll = self.first_row(count, height);
+    }
+
+    /// Buttons are listed top first: they draw in reverse order, so in a narrow
+    /// window the button on top of an overlap is the one that takes the click.
+    fn widgets(&self, count: usize, width: f32, height: f32) -> Vec<Widget<SelectItem>> {
+        let y = height - 47.0;
+        let button = |x: f32, w: f32, action: SelectItem| Widget {
+            rect: Rect::new(x, y, w, 38.0),
+            action,
+        };
+
+        let mut widgets = vec![button(width - 140.0, 100.0, SelectItem::Back)];
+        if count > 0 {
+            widgets.push(button(458.0, 120.0, SelectItem::Delete));
+        }
+        widgets.push(button(264.0, 180.0, SelectItem::Create));
+        widgets.push(button(40.0, 210.0, SelectItem::Play));
+
+        let first = self.first_row(count, height);
+        let last = (first + visible_rows(height)).min(count);
+        for (slot, index) in (first..last).enumerate() {
+            widgets.push(Widget {
+                rect: Rect::new(
+                    40.0,
+                    LIST_TOP + slot as f32 * ROW_STEP,
+                    width - 80.0,
+                    ROW_HEIGHT,
+                ),
+                action: SelectItem::Row(index),
+            });
+        }
+        widgets
     }
 
     pub fn handle_mouse_move(
@@ -347,46 +314,7 @@ impl SelectWorldMenu {
         width: f32,
         height: f32,
     ) {
-        let list_x = 40.0;
-        let list_w = width - 80.0;
-        let list_y = 80.0;
-        let card_h = 60.0;
-        let card_gap = 8.0;
-
-        self.hovered_row = None;
-        for (i, _) in worlds.iter().enumerate() {
-            let cy = list_y + i as f32 * (card_h + card_gap);
-            if (list_x..=list_x + list_w).contains(&x) && (cy..=cy + card_h).contains(&y) {
-                self.hovered_row = Some(i);
-                if self.selected != i {
-                    self.selected = i;
-                    self.pending_delete = None;
-                }
-            }
-        }
-
-        let bot_y = height - 56.0;
-        let btn_h = 40.0;
-        let btn_y = bot_y + 8.0;
-
-        // Bottom buttons: [ PLAY SELECTED WORLD ]  [ CREATE NEW WORLD ]  [ DELETE ]  [ BACK ]
-        let b_play_x = 40.0;
-        let b_play_w = 200.0;
-        let b_create_x = b_play_x + b_play_w + 14.0;
-        let b_create_w = 170.0;
-        let b_del_x = b_create_x + b_create_w + 14.0;
-        let b_del_w = 110.0;
-        let b_back_x = width - 140.0;
-        let b_back_w = 100.0;
-
-        self.hovered_play =
-            (b_play_x..=b_play_x + b_play_w).contains(&x) && (btn_y..=btn_y + btn_h).contains(&y);
-        self.hovered_create = (b_create_x..=b_create_x + b_create_w).contains(&x)
-            && (btn_y..=btn_y + btn_h).contains(&y);
-        self.hovered_delete =
-            (b_del_x..=b_del_x + b_del_w).contains(&x) && (btn_y..=btn_y + btn_h).contains(&y);
-        self.hovered_back =
-            (b_back_x..=b_back_x + b_back_w).contains(&x) && (btn_y..=btn_y + btn_h).contains(&y);
+        self.hovered = ui::hit(&self.widgets(worlds.len(), width, height), x, y);
     }
 
     pub fn handle_mouse_down(
@@ -396,104 +324,222 @@ impl SelectWorldMenu {
         y: f32,
         width: f32,
         height: f32,
-    ) -> SelectWorldAction {
+    ) -> Transition {
         self.handle_mouse_move(worlds, x, y, width, height);
 
-        if self.hovered_back {
+        if self.hovered != Some(SelectItem::Delete) {
             self.pending_delete = None;
-            return SelectWorldAction::Back;
         }
 
-        if self.hovered_create {
-            self.pending_delete = None;
-            return SelectWorldAction::OpenCreate;
-        }
-
-        if self.hovered_play {
-            self.pending_delete = None;
-            if let Some(w) = worlds.get(self.selected) {
-                return SelectWorldAction::Play(w.clone());
+        match self.hovered {
+            Some(SelectItem::Back) => Transition::OpenTitle,
+            Some(SelectItem::Create) => Transition::OpenCreateWorld,
+            Some(SelectItem::Play) => self.play_selected(worlds),
+            Some(SelectItem::Delete) => self.confirm_delete(worlds),
+            Some(SelectItem::Row(index)) => {
+                self.select(index, worlds.len(), height);
+                Transition::None
             }
+            None => Transition::None,
         }
+    }
 
-        if self.hovered_delete {
-            if let Some(w) = worlds.get(self.selected) {
-                if self.pending_delete.as_deref() == Some(&w.id) {
-                    self.pending_delete = None;
-                    return SelectWorldAction::Delete(w.id.clone());
-                } else {
-                    self.pending_delete = Some(w.id.clone());
-                    return SelectWorldAction::None;
-                }
-            }
+    fn play_selected(&self, worlds: &[WorldMeta]) -> Transition {
+        match worlds.get(self.selected) {
+            Some(world) => Transition::StartWorld(world.clone()),
+            None => Transition::None,
+        }
+    }
+
+    /// The first click arms the selected world and the second deletes it.
+    fn confirm_delete(&mut self, worlds: &[WorldMeta]) -> Transition {
+        let Some(world) = worlds.get(self.selected) else {
+            return Transition::None;
+        };
+        if self.pending_delete.as_deref() == Some(world.id.as_str()) {
+            self.pending_delete = None;
+            Transition::DeleteWorld(world.id.clone())
         } else {
-            self.pending_delete = None;
+            self.pending_delete = Some(world.id.clone());
+            Transition::None
         }
+    }
 
-        if let Some(idx) = self.hovered_row {
-            if self.selected != idx {
-                self.selected = idx;
-                self.pending_delete = None;
-            }
+    /// One step of the mouse wheel moves the selection, and the list follows.
+    pub fn handle_wheel(&mut self, worlds: &[WorldMeta], lines: f32, height: f32) {
+        if worlds.is_empty() || lines == 0.0 {
+            return;
         }
-
-        SelectWorldAction::None
+        let index = if lines > 0.0 {
+            self.selected.saturating_sub(1)
+        } else {
+            (self.selected + 1).min(worlds.len() - 1)
+        };
+        self.select(index, worlds.len(), height);
     }
 
     pub fn handle_key_down(
         &mut self,
         worlds: &[WorldMeta],
         key: winit::keyboard::KeyCode,
-    ) -> SelectWorldAction {
+        height: f32,
+    ) -> Transition {
         use winit::keyboard::KeyCode;
+        let count = worlds.len();
         match key {
             KeyCode::Escape => {
-                if self.pending_delete.is_some() {
-                    self.pending_delete = None;
-                    SelectWorldAction::None
+                if self.pending_delete.take().is_some() {
+                    Transition::None
                 } else {
-                    SelectWorldAction::Back
+                    Transition::OpenTitle
                 }
             }
-            KeyCode::ArrowUp => {
-                if !worlds.is_empty() {
-                    let next = (self.selected + worlds.len() - 1) % worlds.len();
-                    if self.selected != next {
-                        self.selected = next;
-                        self.pending_delete = None;
-                    }
-                }
-                SelectWorldAction::None
+            KeyCode::ArrowUp if count > 0 => {
+                self.select((self.selected + count - 1) % count, count, height);
+                Transition::None
             }
-            KeyCode::ArrowDown => {
-                if !worlds.is_empty() {
-                    let next = (self.selected + 1) % worlds.len();
-                    if self.selected != next {
-                        self.selected = next;
-                        self.pending_delete = None;
-                    }
-                }
-                SelectWorldAction::None
+            KeyCode::ArrowDown if count > 0 => {
+                self.select((self.selected + 1) % count, count, height);
+                Transition::None
             }
             KeyCode::Enter => {
                 self.pending_delete = None;
-                if let Some(w) = worlds.get(self.selected) {
-                    SelectWorldAction::Play(w.clone())
-                } else {
-                    SelectWorldAction::OpenCreate
-                }
+                self.play_selected(worlds)
             }
-            _ => SelectWorldAction::None,
+            _ => Transition::None,
+        }
+    }
+
+    fn draw_row(&self, out: &mut Vec<HudVertex>, world: &WorldMeta, index: usize, r: Rect) {
+        let selected = self.selected == index;
+        let bg = if selected {
+            [32, 50, 75, 200]
+        } else if self.hovered == Some(SelectItem::Row(index)) {
+            [22, 34, 52, 170]
+        } else {
+            [0, 0, 0, 110]
+        };
+        let border = if selected { GREEN } else { [55, 65, 85, 140] };
+        ui::outlined(out, r, bg, border);
+        if selected {
+            ui::fill(out, Rect::new(r.x, r.y, 4.0, r.h), GREEN);
+        }
+
+        let name_color = if selected {
+            WHITE
+        } else {
+            [210, 220, 235, 240]
+        };
+        draw_text(
+            out,
+            FontKind::Headline,
+            &world.name,
+            r.x + 20.0,
+            r.y + 12.0,
+            0.85,
+            name_color,
+        );
+        let detail = format!("SEED {}   |   FOLDER saves/{}", world.seed, world.id);
+        draw_text(
+            out,
+            FontKind::Regular,
+            &detail,
+            r.x + 20.0,
+            r.y + 36.0,
+            0.85,
+            [150, 170, 195, 220],
+        );
+    }
+
+    fn draw_button(
+        &self,
+        out: &mut Vec<HudVertex>,
+        worlds: &[WorldMeta],
+        widget: &Widget<SelectItem>,
+    ) {
+        let r = widget.rect;
+        let hovered = self.hovered == Some(widget.action);
+        match widget.action {
+            SelectItem::Play => {
+                let has_world = !worlds.is_empty();
+                let bg = if !has_world {
+                    [40, 45, 55, 120]
+                } else if hovered {
+                    [95, 245, 175, 255]
+                } else {
+                    [80, 230, 160, 240]
+                };
+                let text = if has_world {
+                    [15, 30, 20, 255]
+                } else {
+                    [120, 130, 140, 200]
+                };
+                ui::banded(out, r, bg, [180, 255, 220, 255], [40, 160, 100, 255]);
+                ui::centered_text(
+                    out,
+                    FontKind::Headline,
+                    "PLAY SELECTED WORLD",
+                    r,
+                    11.0,
+                    0.65,
+                    text,
+                );
+            }
+            SelectItem::Create => {
+                let bg = if hovered {
+                    [45, 60, 85, 220]
+                } else {
+                    [25, 32, 48, 170]
+                };
+                ui::outlined(out, r, bg, [70, 85, 115, 180]);
+                ui::centered_text(
+                    out,
+                    FontKind::Headline,
+                    "CREATE NEW WORLD",
+                    r,
+                    11.0,
+                    0.65,
+                    WHITE,
+                );
+            }
+            SelectItem::Delete => {
+                let armed = worlds
+                    .get(self.selected)
+                    .is_some_and(|w| self.pending_delete.as_deref() == Some(w.id.as_str()));
+                let label = if armed { "CONFIRM" } else { "DELETE" };
+                let bg = if armed || hovered {
+                    [220, 45, 45, 240]
+                } else {
+                    [140, 30, 30, 190]
+                };
+                ui::panel(out, r, bg, [255, 120, 120, 255], [100, 20, 20, 255], 1.0);
+                ui::centered_text(out, FontKind::Headline, label, r, 11.0, 0.65, WHITE);
+            }
+            SelectItem::Back => {
+                let bg = if hovered {
+                    [50, 60, 80, 220]
+                } else {
+                    [0, 0, 0, 130]
+                };
+                ui::outlined(out, r, bg, [65, 75, 95, 160]);
+                ui::centered_text(
+                    out,
+                    FontKind::Headline,
+                    "BACK",
+                    r,
+                    11.0,
+                    0.65,
+                    [210, 220, 235, 255],
+                );
+            }
+            SelectItem::Row(_) => {}
         }
     }
 
     pub fn build_vertices(&self, worlds: &[WorldMeta], width: f32, height: f32) -> Vec<HudVertex> {
         let mut out = Vec::with_capacity(8192);
 
-        // Header
-        push_rect(&mut out, 0.0, 0.0, width, 64.0, [0, 0, 0, 130]);
-        push_rect(&mut out, 0.0, 63.0, width, 1.0, [50, 60, 80, 160]);
-
+        ui::header_bar(&mut out, width, 64.0, [0, 0, 0, 130], [50, 60, 80, 160]);
         draw_text(
             &mut out,
             FontKind::Headline,
@@ -501,276 +547,41 @@ impl SelectWorldMenu {
             40.0,
             18.0,
             1.0,
-            [255, 255, 255, 255],
+            WHITE,
         );
 
-        // World Cards List
-        let list_x = 40.0;
-        let list_w = width - 80.0;
-        let list_y = 80.0;
-        let card_h = 60.0;
-        let card_gap = 8.0;
+        let widgets = self.widgets(worlds.len(), width, height);
 
         if worlds.is_empty() {
             let msg = "NO WORLDS FOUND. CLICK 'CREATE NEW WORLD' TO START ADVENTURE!";
             let tw = measure_text(FontKind::Regular, msg, 1.0);
-            let cx = (width - tw) * 0.5;
             draw_text(
                 &mut out,
                 FontKind::Regular,
                 msg,
-                cx,
+                (width - tw) * 0.5,
                 220.0,
                 1.0,
                 [180, 195, 215, 255],
             );
-        } else {
-            for (i, w) in worlds.iter().enumerate() {
-                let cy = list_y + i as f32 * (card_h + card_gap);
-                if cy + card_h > height - 70.0 {
-                    break;
-                }
-
-                let is_sel = self.selected == i;
-                let bg_col = if is_sel {
-                    [32, 50, 75, 200]
-                } else {
-                    [0, 0, 0, 110]
-                };
-
-                push_rect(&mut out, list_x, cy, list_w, card_h, bg_col);
-
-                let border_col = if is_sel {
-                    [80, 230, 160, 255]
-                } else {
-                    [55, 65, 85, 140]
-                };
-                push_rect(&mut out, list_x, cy, list_w, 1.0, border_col);
-                push_rect(&mut out, list_x, cy + card_h - 1.0, list_w, 1.0, border_col);
-                push_rect(&mut out, list_x, cy, 1.0, card_h, border_col);
-                push_rect(&mut out, list_x + list_w - 1.0, cy, 1.0, card_h, border_col);
-
-                if is_sel {
-                    push_rect(&mut out, list_x, cy, 4.0, card_h, [80, 230, 160, 255]);
-                }
-
-                // World Name
-                let name_col = if is_sel {
-                    [255, 255, 255, 255]
-                } else {
-                    [210, 220, 235, 240]
-                };
-                draw_text(
-                    &mut out,
-                    FontKind::Headline,
-                    &w.name,
-                    list_x + 20.0,
-                    cy + 12.0,
-                    0.85,
-                    name_col,
-                );
-
-                // Subtitle details
-                let detail = format!("SEED {}   |   FOLDER saves/{}", w.seed, w.id);
-                draw_text(
-                    &mut out,
-                    FontKind::Regular,
-                    &detail,
-                    list_x + 20.0,
-                    cy + 36.0,
-                    0.85,
-                    [150, 170, 195, 220],
-                );
+        }
+        for widget in &widgets {
+            if let SelectItem::Row(index) = widget.action {
+                self.draw_row(&mut out, &worlds[index], index, widget.rect);
             }
         }
 
-        // Bottom Action Bar
-        let bot_h = 56.0;
-        let bot_y = height - bot_h;
-        push_rect(&mut out, 0.0, bot_y, width, bot_h, [0, 0, 0, 140]);
-        push_rect(&mut out, 0.0, bot_y, width, 1.0, [50, 60, 80, 160]);
-
-        let btn_h = 38.0;
-        let btn_y = bot_y + 9.0;
-        let b_play_x = 40.0;
-        let b_play_w = 210.0;
-        let b_create_x = b_play_x + b_play_w + 14.0;
-        let b_create_w = 180.0;
-        let b_del_x = b_create_x + b_create_w + 14.0;
-        let b_del_w = 110.0;
-        let b_back_x = width - 140.0;
-        let b_back_w = 100.0;
-
-        // Button 1: [ PLAY SELECTED WORLD ]
-        let has_world = !worlds.is_empty();
-        let play_bg = if !has_world {
-            [40, 45, 55, 120]
-        } else if self.hovered_play {
-            [95, 245, 175, 255]
-        } else {
-            [80, 230, 160, 240]
-        };
-        push_rect(&mut out, b_play_x, btn_y, b_play_w, btn_h, play_bg);
-        push_rect(
+        ui::action_bar(
             &mut out,
-            b_play_x,
-            btn_y,
-            b_play_w,
-            1.0,
-            [180, 255, 220, 255],
+            width,
+            height,
+            56.0,
+            [0, 0, 0, 140],
+            [50, 60, 80, 160],
         );
-        push_rect(
-            &mut out,
-            b_play_x,
-            btn_y + btn_h - 1.0,
-            b_play_w,
-            1.0,
-            [40, 160, 100, 255],
-        );
-        let pt_text = "PLAY SELECTED WORLD";
-        let ptw = measure_text(FontKind::Headline, pt_text, 0.65);
-        let ptx = b_play_x + (b_play_w - ptw) * 0.5;
-        let text_col = if has_world {
-            [15, 30, 20, 255]
-        } else {
-            [120, 130, 140, 200]
-        };
-        draw_text(
-            &mut out,
-            FontKind::Headline,
-            pt_text,
-            ptx,
-            btn_y + 11.0,
-            0.65,
-            text_col,
-        );
-
-        // Button 2: [ CREATE NEW WORLD ]
-        let create_bg = if self.hovered_create {
-            [45, 60, 85, 220]
-        } else {
-            [25, 32, 48, 170]
-        };
-        push_rect(&mut out, b_create_x, btn_y, b_create_w, btn_h, create_bg);
-        push_rect(
-            &mut out,
-            b_create_x,
-            btn_y,
-            b_create_w,
-            1.0,
-            [70, 85, 115, 180],
-        );
-        push_rect(
-            &mut out,
-            b_create_x,
-            btn_y + btn_h - 1.0,
-            b_create_w,
-            1.0,
-            [70, 85, 115, 180],
-        );
-        push_rect(&mut out, b_create_x, btn_y, 1.0, btn_h, [70, 85, 115, 180]);
-        push_rect(
-            &mut out,
-            b_create_x + b_create_w - 1.0,
-            btn_y,
-            1.0,
-            btn_h,
-            [70, 85, 115, 180],
-        );
-        let ct_text = "CREATE NEW WORLD";
-        let ctw = measure_text(FontKind::Headline, ct_text, 0.65);
-        let ctx = b_create_x + (b_create_w - ctw) * 0.5;
-        draw_text(
-            &mut out,
-            FontKind::Headline,
-            ct_text,
-            ctx,
-            btn_y + 11.0,
-            0.65,
-            [255, 255, 255, 255],
-        );
-
-        // Button 3: [ DELETE ] or [ CONFIRM ]
-        if has_world {
-            let is_armed = worlds
-                .get(self.selected)
-                .map(|w| self.pending_delete.as_deref() == Some(&w.id))
-                .unwrap_or(false);
-            let d_text = if is_armed { "CONFIRM" } else { "DELETE" };
-            let del_bg = if is_armed || self.hovered_delete {
-                [220, 45, 45, 240]
-            } else {
-                [140, 30, 30, 190]
-            };
-            push_rect(&mut out, b_del_x, btn_y, b_del_w, btn_h, del_bg);
-            push_rect(&mut out, b_del_x, btn_y, b_del_w, 1.0, [255, 120, 120, 255]);
-            push_rect(
-                &mut out,
-                b_del_x,
-                btn_y + btn_h - 1.0,
-                b_del_w,
-                1.0,
-                [100, 20, 20, 255],
-            );
-            push_rect(&mut out, b_del_x, btn_y, 1.0, btn_h, [255, 120, 120, 255]);
-            push_rect(
-                &mut out,
-                b_del_x + b_del_w - 1.0,
-                btn_y,
-                1.0,
-                btn_h,
-                [100, 20, 20, 255],
-            );
-            let dtw = measure_text(FontKind::Headline, d_text, 0.65);
-            let dtx = b_del_x + (b_del_w - dtw) * 0.5;
-            draw_text(
-                &mut out,
-                FontKind::Headline,
-                d_text,
-                dtx,
-                btn_y + 11.0,
-                0.65,
-                [255, 255, 255, 255],
-            );
+        for widget in widgets.iter().rev() {
+            self.draw_button(&mut out, worlds, widget);
         }
-
-        // Button 4: [ BACK ]
-        let back_bg = if self.hovered_back {
-            [50, 60, 80, 220]
-        } else {
-            [0, 0, 0, 130]
-        };
-        push_rect(&mut out, b_back_x, btn_y, b_back_w, btn_h, back_bg);
-        push_rect(&mut out, b_back_x, btn_y, b_back_w, 1.0, [65, 75, 95, 160]);
-        push_rect(
-            &mut out,
-            b_back_x,
-            btn_y + btn_h - 1.0,
-            b_back_w,
-            1.0,
-            [65, 75, 95, 160],
-        );
-        push_rect(&mut out, b_back_x, btn_y, 1.0, btn_h, [65, 75, 95, 160]);
-        push_rect(
-            &mut out,
-            b_back_x + b_back_w - 1.0,
-            btn_y,
-            1.0,
-            btn_h,
-            [65, 75, 95, 160],
-        );
-        let b_text = "BACK";
-        let btw = measure_text(FontKind::Headline, b_text, 0.65);
-        let btx = b_back_x + (b_back_w - btw) * 0.5;
-        draw_text(
-            &mut out,
-            FontKind::Headline,
-            b_text,
-            btx,
-            btn_y + 11.0,
-            0.65,
-            [210, 220, 235, 255],
-        );
 
         out
     }
@@ -780,10 +591,11 @@ impl SelectWorldMenu {
 // CREATE WORLD MENU
 // ==========================================
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum CreateWorldAction {
-    None,
-    Create { name: String, seed: String },
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CreateItem {
+    NameField,
+    SeedField,
+    Create,
     Cancel,
 }
 
@@ -791,10 +603,7 @@ pub struct CreateWorldMenu {
     pub name_input: String,
     pub seed_input: String,
     pub active_field: usize, // 0 = Name, 1 = Seed
-    pub hovered_create: bool,
-    pub hovered_cancel: bool,
-    pub hovered_name_field: bool,
-    pub hovered_seed_field: bool,
+    hovered: Option<CreateItem>,
 }
 
 impl CreateWorldMenu {
@@ -803,86 +612,70 @@ impl CreateWorldMenu {
             name_input: "New World".to_string(),
             seed_input: String::new(),
             active_field: 0,
-            hovered_create: false,
-            hovered_cancel: false,
-            hovered_name_field: false,
-            hovered_seed_field: false,
+            hovered: None,
         }
+    }
+
+    fn widgets(width: f32, height: f32) -> [Widget<CreateItem>; 4] {
+        let field_x = (width - 440.0) * 0.5;
+        let create = Rect::new((width - 340.0) * 0.5, height - 48.0, 160.0, 42.0);
+        let cancel = Rect::new(create.x + 180.0, create.y, 160.0, 42.0);
+        [
+            Widget {
+                rect: Rect::new(field_x, 150.0, 440.0, 42.0),
+                action: CreateItem::NameField,
+            },
+            Widget {
+                rect: Rect::new(field_x, 240.0, 440.0, 42.0),
+                action: CreateItem::SeedField,
+            },
+            Widget {
+                rect: create,
+                action: CreateItem::Create,
+            },
+            Widget {
+                rect: cancel,
+                action: CreateItem::Cancel,
+            },
+        ]
     }
 
     pub fn handle_mouse_move(&mut self, x: f32, y: f32, width: f32, height: f32) {
-        let box_x = (width - 440.0) * 0.5;
-        let box_y = 120.0;
-        let input_w = 440.0;
-        let input_h = 42.0;
-
-        let name_y = box_y + 30.0;
-        let seed_y = box_y + 120.0;
-
-        self.hovered_name_field =
-            (box_x..=box_x + input_w).contains(&x) && (name_y..=name_y + input_h).contains(&y);
-        self.hovered_seed_field =
-            (box_x..=box_x + input_w).contains(&x) && (seed_y..=seed_y + input_h).contains(&y);
-
-        let bot_y = height - 60.0;
-        let btn_h = 42.0;
-        let btn_y = bot_y + 8.0;
-
-        let b_create_x = (width - 340.0) * 0.5;
-        let b_create_w = 160.0;
-        let b_cancel_x = b_create_x + b_create_w + 20.0;
-        let b_cancel_w = 160.0;
-
-        self.hovered_create = (b_create_x..=b_create_x + b_create_w).contains(&x)
-            && (btn_y..=btn_y + btn_h).contains(&y);
-        self.hovered_cancel = (b_cancel_x..=b_cancel_x + b_cancel_w).contains(&x)
-            && (btn_y..=btn_y + btn_h).contains(&y);
+        self.hovered = ui::hit(&Self::widgets(width, height), x, y);
     }
 
-    pub fn handle_mouse_down(
-        &mut self,
-        x: f32,
-        y: f32,
-        width: f32,
-        height: f32,
-    ) -> CreateWorldAction {
+    fn create(&self) -> Transition {
+        Transition::CreateWorld {
+            name: self.name_input.clone(),
+            seed: self.seed_input.clone(),
+        }
+    }
+
+    pub fn handle_mouse_down(&mut self, x: f32, y: f32, width: f32, height: f32) -> Transition {
         self.handle_mouse_move(x, y, width, height);
-
-        if self.hovered_name_field {
-            self.active_field = 0;
-            return CreateWorldAction::None;
+        match self.hovered {
+            Some(CreateItem::NameField) => {
+                self.active_field = 0;
+                Transition::None
+            }
+            Some(CreateItem::SeedField) => {
+                self.active_field = 1;
+                Transition::None
+            }
+            Some(CreateItem::Create) => self.create(),
+            Some(CreateItem::Cancel) => Transition::OpenWorldList,
+            None => Transition::None,
         }
-
-        if self.hovered_seed_field {
-            self.active_field = 1;
-            return CreateWorldAction::None;
-        }
-
-        if self.hovered_create {
-            return CreateWorldAction::Create {
-                name: self.name_input.clone(),
-                seed: self.seed_input.clone(),
-            };
-        }
-
-        if self.hovered_cancel {
-            return CreateWorldAction::Cancel;
-        }
-
-        CreateWorldAction::None
     }
 
-    pub fn handle_key_down(&mut self, key: winit::keyboard::KeyCode) -> CreateWorldAction {
+    pub fn handle_key_down(&mut self, key: winit::keyboard::KeyCode) -> Transition {
         use winit::keyboard::KeyCode;
         match key {
-            KeyCode::Escape => CreateWorldAction::Cancel,
-            KeyCode::Enter => CreateWorldAction::Create {
-                name: self.name_input.clone(),
-                seed: self.seed_input.clone(),
-            },
+            KeyCode::Escape => Transition::OpenWorldList,
+            KeyCode::Enter => self.create(),
             KeyCode::Tab | KeyCode::ArrowDown | KeyCode::ArrowUp => {
                 self.active_field = (self.active_field + 1) % 2;
-                CreateWorldAction::None
+                Transition::None
             }
             KeyCode::Backspace => {
                 if self.active_field == 0 {
@@ -890,9 +683,9 @@ impl CreateWorldMenu {
                 } else {
                     self.seed_input.pop();
                 }
-                CreateWorldAction::None
+                Transition::None
             }
-            _ => CreateWorldAction::None,
+            _ => Transition::None,
         }
     }
 
@@ -912,10 +705,7 @@ impl CreateWorldMenu {
     pub fn build_vertices(&self, width: f32, height: f32, time: f32) -> Vec<HudVertex> {
         let mut out = Vec::with_capacity(4096);
 
-        // Header
-        push_rect(&mut out, 0.0, 0.0, width, 64.0, [0, 0, 0, 130]);
-        push_rect(&mut out, 0.0, 63.0, width, 1.0, [50, 60, 80, 160]);
-
+        ui::header_bar(&mut out, width, 64.0, [0, 0, 0, 130], [50, 60, 80, 160]);
         draw_text(
             &mut out,
             FontKind::Headline,
@@ -923,236 +713,64 @@ impl CreateWorldMenu {
             40.0,
             18.0,
             1.0,
-            [255, 255, 255, 255],
+            WHITE,
         );
 
-        let box_x = (width - 440.0) * 0.5;
-        let box_y = 120.0;
-        let input_w = 440.0;
-        let input_h = 42.0;
-
-        // Field 1: World Name
-        let name_y = box_y + 30.0;
-        draw_text(
-            &mut out,
-            FontKind::Headline,
-            "WORLD NAME",
-            box_x,
-            box_y,
-            0.75,
-            [80, 230, 160, 255],
-        );
-
-        let name_border = if self.active_field == 0 {
-            [80, 230, 160, 255]
-        } else {
-            [60, 70, 90, 180]
+        let widgets = Self::widgets(width, height);
+        let field = TextField {
+            label: "WORLD NAME",
+            placeholder: "Enter world name...",
+            value: &self.name_input,
+            active: self.active_field == 0,
         };
-        push_rect(&mut out, box_x, name_y, input_w, input_h, [0, 0, 0, 150]);
-        push_rect(&mut out, box_x, name_y, input_w, 1.0, name_border);
-        push_rect(
-            &mut out,
-            box_x,
-            name_y + input_h - 1.0,
-            input_w,
-            1.0,
-            name_border,
-        );
-        push_rect(&mut out, box_x, name_y, 1.0, input_h, name_border);
-        push_rect(
-            &mut out,
-            box_x + input_w - 1.0,
-            name_y,
-            1.0,
-            input_h,
-            name_border,
-        );
-
-        let name_display = if self.name_input.is_empty() {
-            "Enter world name..."
-        } else {
-            &self.name_input
+        field.draw(&mut out, widgets[0].rect, time);
+        let field = TextField {
+            label: "SEED (OPTIONAL)",
+            placeholder: "Leave blank for random seed",
+            value: &self.seed_input,
+            active: self.active_field == 1,
         };
-        let name_col = if self.name_input.is_empty() {
-            [120, 130, 150, 180]
-        } else {
-            [255, 255, 255, 255]
-        };
-        draw_text(
+        field.draw(&mut out, widgets[1].rect, time);
+
+        ui::action_bar(
             &mut out,
-            FontKind::Regular,
-            name_display,
-            box_x + 14.0,
-            name_y + 11.0,
-            1.0,
-            name_col,
+            width,
+            height,
+            56.0,
+            [0, 0, 0, 140],
+            [50, 60, 80, 160],
         );
 
-        // Blinking caret for Name field
-        if self.active_field == 0 && (time * 2.0).fract() < 0.5 {
-            let nw = measure_text(FontKind::Regular, &self.name_input, 1.0);
-            push_rect(
-                &mut out,
-                box_x + 15.0 + nw,
-                name_y + 10.0,
-                2.0,
-                20.0,
-                [255, 255, 255, 255],
-            );
-        }
-
-        // Field 2: World Seed
-        let seed_lbl_y = box_y + 90.0;
-        let seed_y = box_y + 120.0;
-        draw_text(
-            &mut out,
-            FontKind::Headline,
-            "SEED (OPTIONAL)",
-            box_x,
-            seed_lbl_y,
-            0.75,
-            [80, 230, 160, 255],
-        );
-
-        let seed_border = if self.active_field == 1 {
-            [80, 230, 160, 255]
-        } else {
-            [60, 70, 90, 180]
-        };
-        push_rect(&mut out, box_x, seed_y, input_w, input_h, [0, 0, 0, 150]);
-        push_rect(&mut out, box_x, seed_y, input_w, 1.0, seed_border);
-        push_rect(
-            &mut out,
-            box_x,
-            seed_y + input_h - 1.0,
-            input_w,
-            1.0,
-            seed_border,
-        );
-        push_rect(&mut out, box_x, seed_y, 1.0, input_h, seed_border);
-        push_rect(
-            &mut out,
-            box_x + input_w - 1.0,
-            seed_y,
-            1.0,
-            input_h,
-            seed_border,
-        );
-
-        let seed_display = if self.seed_input.is_empty() {
-            "Leave blank for random seed"
-        } else {
-            &self.seed_input
-        };
-        let seed_col = if self.seed_input.is_empty() {
-            [120, 130, 150, 180]
-        } else {
-            [255, 255, 255, 255]
-        };
-        draw_text(
-            &mut out,
-            FontKind::Regular,
-            seed_display,
-            box_x + 14.0,
-            seed_y + 11.0,
-            1.0,
-            seed_col,
-        );
-
-        // Blinking caret for Seed field
-        if self.active_field == 1 && (time * 2.0).fract() < 0.5 {
-            let sw = measure_text(FontKind::Regular, &self.seed_input, 1.0);
-            push_rect(
-                &mut out,
-                box_x + 15.0 + sw,
-                seed_y + 10.0,
-                2.0,
-                20.0,
-                [255, 255, 255, 255],
-            );
-        }
-
-        // Bottom Action Bar
-        let bot_h = 56.0;
-        let bot_y = height - bot_h;
-        push_rect(&mut out, 0.0, bot_y, width, bot_h, [0, 0, 0, 140]);
-        push_rect(&mut out, 0.0, bot_y, width, 1.0, [50, 60, 80, 160]);
-
-        let btn_h = 42.0;
-        let btn_y = bot_y + 8.0;
-        let b_create_x = (width - 340.0) * 0.5;
-        let b_create_w = 160.0;
-        let b_cancel_x = b_create_x + b_create_w + 20.0;
-        let b_cancel_w = 160.0;
-
-        // Button 1: [ CREATE WORLD ]
-        let cr_bg = if self.hovered_create {
+        let r = widgets[2].rect;
+        let bg = if self.hovered == Some(CreateItem::Create) {
             [95, 245, 175, 255]
         } else {
             [80, 230, 160, 240]
         };
-        push_rect(&mut out, b_create_x, btn_y, b_create_w, btn_h, cr_bg);
-        push_rect(
-            &mut out,
-            b_create_x,
-            btn_y,
-            b_create_w,
-            1.0,
-            [180, 255, 220, 255],
-        );
-        push_rect(
-            &mut out,
-            b_create_x,
-            btn_y + btn_h - 1.0,
-            b_create_w,
-            1.0,
-            [40, 160, 100, 255],
-        );
-        let cr_text = "CREATE WORLD";
-        let cr_w = measure_text(FontKind::Headline, cr_text, 0.75);
-        let cr_x = b_create_x + (b_create_w - cr_w) * 0.5;
-        draw_text(
+        ui::banded(&mut out, r, bg, [180, 255, 220, 255], [40, 160, 100, 255]);
+        ui::centered_text(
             &mut out,
             FontKind::Headline,
-            cr_text,
-            cr_x,
-            btn_y + 12.0,
+            "CREATE WORLD",
+            r,
+            12.0,
             0.75,
             [15, 30, 20, 255],
         );
 
-        // Button 2: [ CANCEL ]
-        let cn_bg = if self.hovered_cancel {
+        let r = widgets[3].rect;
+        let bg = if self.hovered == Some(CreateItem::Cancel) {
             [50, 60, 80, 220]
         } else {
             [25, 32, 45, 160]
         };
-        push_rect(&mut out, b_cancel_x, btn_y, b_cancel_w, btn_h, cn_bg);
-        push_rect(
-            &mut out,
-            b_cancel_x,
-            btn_y,
-            b_cancel_w,
-            1.0,
-            [65, 75, 95, 160],
-        );
-        push_rect(
-            &mut out,
-            b_cancel_x,
-            btn_y + btn_h - 1.0,
-            b_cancel_w,
-            1.0,
-            [65, 75, 95, 160],
-        );
-        let cn_text = "CANCEL";
-        let cn_w = measure_text(FontKind::Headline, cn_text, 0.75);
-        let cn_x = b_cancel_x + (b_cancel_w - cn_w) * 0.5;
-        draw_text(
+        ui::banded(&mut out, r, bg, [65, 75, 95, 160], [65, 75, 95, 160]);
+        ui::centered_text(
             &mut out,
             FontKind::Headline,
-            cn_text,
-            cn_x,
-            btn_y + 12.0,
+            "CANCEL",
+            r,
+            12.0,
             0.75,
             [210, 220, 235, 255],
         );
@@ -1161,103 +779,394 @@ impl CreateWorldMenu {
     }
 }
 
+/// A labelled text box on the new world screen.
+struct TextField<'a> {
+    label: &'a str,
+    placeholder: &'a str,
+    value: &'a str,
+    active: bool,
+}
+
+impl TextField<'_> {
+    fn draw(&self, out: &mut Vec<HudVertex>, r: Rect, time: f32) {
+        draw_text(
+            out,
+            FontKind::Headline,
+            self.label,
+            r.x,
+            r.y - 30.0,
+            0.75,
+            GREEN,
+        );
+
+        let border = if self.active {
+            GREEN
+        } else {
+            [60, 70, 90, 180]
+        };
+        ui::outlined(out, r, [0, 0, 0, 150], border);
+
+        let (text, color) = if self.value.is_empty() {
+            (self.placeholder, [120, 130, 150, 180])
+        } else {
+            (self.value, WHITE)
+        };
+        draw_text(
+            out,
+            FontKind::Regular,
+            text,
+            r.x + 14.0,
+            r.y + 11.0,
+            1.0,
+            color,
+        );
+
+        if self.active && (time * 2.0).fract() < 0.5 {
+            let width = measure_text(FontKind::Regular, self.value, 1.0);
+            push_rect(out, r.x + 15.0 + width, r.y + 10.0, 2.0, 20.0, WHITE);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use winit::keyboard::KeyCode;
 
-    #[test]
-    fn mouse_down_on_play_returns_open_select_world() {
-        let mut menu = MainMenu::new();
-        let width = 800.0;
-        let height = 600.0;
-        let play_x = 400.0;
-        let play_y = height - 70.0 + 20.0;
-        let action = menu.handle_mouse_down(play_x, play_y, width, height);
-        assert_eq!(action, MainMenuAction::OpenSelectWorld);
+    const W: f32 = 800.0;
+    const H: f32 = 600.0;
+    const SIZES: [(f32, f32); 3] = [(800.0, 600.0), (1920.0, 1080.0), (3840.0, 2160.0)];
+    /// A point on the DELETE button in the default window.
+    const DELETE: (f32, f32) = (500.0, 570.0);
+
+    fn worlds(count: usize) -> Vec<WorldMeta> {
+        (0..count)
+            .map(|i| WorldMeta::new(format!("w{i}"), format!("World {i}"), i as u64))
+            .collect()
+    }
+
+    fn click(menu: &mut SelectWorldMenu, list: &[WorldMeta], (x, y): (f32, f32)) -> Transition {
+        menu.handle_mouse_down(list, x, y, W, H)
+    }
+
+    fn rect_of(menu: &SelectWorldMenu, count: usize, item: SelectItem) -> Rect {
+        menu.widgets(count, W, H)
+            .iter()
+            .find(|widget| widget.action == item)
+            .expect("widget is listed")
+            .rect
     }
 
     #[test]
-    fn enter_or_space_triggers_open_select_world() {
+    fn title_buttons_fire_at_their_center() {
+        for (w, h) in SIZES {
+            for widget in MainMenu::widgets(w, h) {
+                let (x, y) = widget.rect.center();
+                let action = MainMenu::new().handle_mouse_down(x, y, w, h);
+                let expected = match widget.action {
+                    TitleItem::Play => Transition::OpenWorldList,
+                    TitleItem::Settings => Transition::OpenSettings { from_title: true },
+                    TitleItem::Quit => Transition::Quit,
+                };
+                assert_eq!(action, expected, "at {w}x{h}");
+            }
+        }
+    }
+
+    #[test]
+    fn world_list_buttons_fire_at_their_center() {
+        let list = worlds(3);
+        for (w, h) in SIZES {
+            let widgets = SelectWorldMenu::new().widgets(list.len(), w, h);
+            assert_eq!(widgets.len(), 7, "four buttons and three rows");
+            for widget in widgets {
+                let (x, y) = widget.rect.center();
+                let mut menu = SelectWorldMenu::new();
+                let action = menu.handle_mouse_down(&list, x, y, w, h);
+                match widget.action {
+                    SelectItem::Play => {
+                        assert_eq!(action, Transition::StartWorld(list[0].clone()))
+                    }
+                    SelectItem::Create => assert_eq!(action, Transition::OpenCreateWorld),
+                    SelectItem::Back => assert_eq!(action, Transition::OpenTitle),
+                    SelectItem::Delete => {
+                        assert_eq!(action, Transition::None);
+                        assert_eq!(menu.pending_delete.as_deref(), Some("w0"));
+                    }
+                    SelectItem::Row(index) => {
+                        assert_eq!(action, Transition::None);
+                        assert_eq!(menu.selected, index);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn create_world_widgets_fire_at_their_center() {
+        for (w, h) in SIZES {
+            for widget in CreateWorldMenu::widgets(w, h) {
+                let (x, y) = widget.rect.center();
+                let mut menu = CreateWorldMenu::new();
+                menu.active_field = 1 - usize::from(widget.action == CreateItem::SeedField);
+                let action = menu.handle_mouse_down(x, y, w, h);
+                match widget.action {
+                    CreateItem::NameField => assert_eq!(menu.active_field, 0),
+                    CreateItem::SeedField => assert_eq!(menu.active_field, 1),
+                    CreateItem::Create => {
+                        assert!(matches!(action, Transition::CreateWorld { .. }))
+                    }
+                    CreateItem::Cancel => assert_eq!(action, Transition::OpenWorldList),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn delete_button_reacts_across_its_whole_drawn_width() {
+        let list = worlds(1);
+        let delete = rect_of(&SelectWorldMenu::new(), 1, SelectItem::Delete);
+        for x in [delete.x + 1.0, delete.x + delete.w - 1.0] {
+            let mut menu = SelectWorldMenu::new();
+            click(&mut menu, &list, (x, DELETE.1));
+            assert_eq!(menu.pending_delete.as_deref(), Some("w0"), "at x {x}");
+        }
+    }
+
+    #[test]
+    fn create_button_edge_does_not_arm_delete() {
+        let list = worlds(1);
+        let create = rect_of(&SelectWorldMenu::new(), 1, SelectItem::Create);
+        let mut menu = SelectWorldMenu::new();
+        let action = click(&mut menu, &list, (create.x + create.w - 1.0, DELETE.1));
+        assert_eq!(action, Transition::OpenCreateWorld);
+        assert_eq!(menu.pending_delete, None);
+    }
+
+    #[test]
+    fn back_takes_the_click_where_it_covers_delete() {
+        let list = worlds(1);
+        let mut menu = SelectWorldMenu::new();
+        let action = menu.handle_mouse_down(&list, 540.0, 450.0, 640.0, 480.0);
+        assert_eq!(action, Transition::OpenTitle);
+        assert_eq!(menu.pending_delete, None);
+    }
+
+    #[test]
+    fn hover_does_not_change_the_selected_world() {
+        let list = worlds(4);
+        let mut menu = SelectWorldMenu::new();
+        click(&mut menu, &list, (490.0, 110.0));
+        assert_eq!(menu.selected, 0);
+
+        // The cursor crosses every row on its way down to the DELETE button.
+        for step in 0..=46 {
+            menu.handle_mouse_move(&list, 490.0, 110.0 + step as f32 * 10.0, W, H);
+        }
+        assert_eq!(menu.selected, 0);
+        click(&mut menu, &list, DELETE);
+        assert_eq!(
+            click(&mut menu, &list, DELETE),
+            Transition::DeleteWorld("w0".into())
+        );
+    }
+
+    #[test]
+    fn worlds_past_the_list_take_no_clicks() {
+        let list = worlds(8);
+        let mut menu = SelectWorldMenu::new();
+        menu.handle_key_down(&list, KeyCode::ArrowDown, H);
+
+        click(&mut menu, &list, DELETE);
+        assert_eq!(menu.pending_delete.as_deref(), Some("w1"));
+        assert_eq!(
+            click(&mut menu, &list, DELETE),
+            Transition::DeleteWorld("w1".into())
+        );
+
+        assert_eq!(
+            click(&mut menu, &list, (100.0, 570.0)),
+            Transition::StartWorld(list[1].clone())
+        );
+    }
+
+    #[test]
+    fn list_shows_as_many_rows_as_fit() {
+        assert_eq!(visible_rows(600.0), 6);
+        assert_eq!(visible_rows(1080.0), 13);
+        assert_eq!(visible_rows(100.0), 1);
+    }
+
+    #[test]
+    fn selected_world_stays_on_screen() {
+        let list = worlds(10);
+        let mut menu = SelectWorldMenu::new();
+        for expected in 1..10 {
+            menu.handle_key_down(&list, KeyCode::ArrowDown, H);
+            assert_eq!(menu.selected, expected);
+            rect_of(&menu, 10, SelectItem::Row(expected));
+        }
+        assert_eq!(menu.first_row(10, H), 4);
+
+        // Walking back up leaves the list alone until the top row is passed.
+        menu.handle_key_down(&list, KeyCode::ArrowUp, H);
+        assert_eq!(menu.first_row(10, H), 4);
+        for _ in 0..5 {
+            menu.handle_key_down(&list, KeyCode::ArrowUp, H);
+        }
+        assert_eq!((menu.selected, menu.first_row(10, H)), (3, 3));
+
+        // ArrowDown wraps from the last world to the first.
+        for _ in 0..7 {
+            menu.handle_key_down(&list, KeyCode::ArrowDown, H);
+        }
+        assert_eq!((menu.selected, menu.first_row(10, H)), (0, 0));
+    }
+
+    #[test]
+    fn shrinking_the_window_keeps_the_selection_listed() {
+        let list = worlds(10);
+        let mut menu = SelectWorldMenu::new();
+        for _ in 0..5 {
+            menu.handle_key_down(&list, KeyCode::ArrowDown, 1080.0);
+        }
+        assert_eq!(menu.first_row(10, 1080.0), 0);
+        assert_eq!(menu.first_row(10, 400.0), 3);
+        let widgets = menu.widgets(10, W, 400.0);
+        assert!(widgets
+            .iter()
+            .any(|widget| widget.action == SelectItem::Row(5)));
+    }
+
+    #[test]
+    fn wheel_moves_the_selection_and_cancels_delete() {
+        let list = worlds(8);
+        let mut menu = SelectWorldMenu::new();
+        click(&mut menu, &list, DELETE);
+        assert!(menu.pending_delete.is_some());
+
+        menu.handle_wheel(&list, -1.0, H);
+        assert_eq!(menu.selected, 1);
+        assert_eq!(menu.pending_delete, None);
+
+        for _ in 0..20 {
+            menu.handle_wheel(&list, -1.0, H);
+        }
+        assert_eq!(menu.selected, 7);
+        rect_of(&menu, 8, SelectItem::Row(7));
+
+        menu.handle_wheel(&list, 1.0, H);
+        assert_eq!(menu.selected, 6);
+    }
+
+    #[test]
+    fn enter_or_space_opens_the_world_list() {
         let mut menu = MainMenu::new();
         assert_eq!(
-            menu.handle_key_down(winit::keyboard::KeyCode::Enter),
-            MainMenuAction::OpenSelectWorld
+            menu.handle_key_down(KeyCode::Enter),
+            Transition::OpenWorldList
         );
         assert_eq!(
-            menu.handle_key_down(winit::keyboard::KeyCode::Space),
-            MainMenuAction::OpenSelectWorld
+            menu.handle_key_down(KeyCode::Space),
+            Transition::OpenWorldList
         );
     }
 
     #[test]
     fn select_world_menu_navigation() {
         let mut menu = SelectWorldMenu::new();
-        let worlds = vec![
-            WorldMeta::new("w1".into(), "World 1".into(), 100),
-            WorldMeta::new("w2".into(), "World 2".into(), 200),
-        ];
+        let list = worlds(2);
 
         assert_eq!(menu.selected, 0);
-        let action = menu.handle_key_down(&worlds, winit::keyboard::KeyCode::ArrowDown);
-        assert_eq!(action, SelectWorldAction::None);
+        let action = menu.handle_key_down(&list, KeyCode::ArrowDown, H);
+        assert_eq!(action, Transition::None);
         assert_eq!(menu.selected, 1);
 
-        let play_action = menu.handle_key_down(&worlds, winit::keyboard::KeyCode::Enter);
-        assert_eq!(play_action, SelectWorldAction::Play(worlds[1].clone()));
+        let play = menu.handle_key_down(&list, KeyCode::Enter, H);
+        assert_eq!(play, Transition::StartWorld(list[1].clone()));
     }
 
     #[test]
     fn delete_needs_two_clicks_on_the_same_world() {
         let mut menu = SelectWorldMenu::new();
-        let worlds = vec![
-            WorldMeta::new("w1".into(), "World 1".into(), 100),
-            WorldMeta::new("w2".into(), "World 2".into(), 200),
-        ];
-        let first_click = menu.handle_mouse_down(&worlds, 490.0, 570.0, 800.0, 600.0);
-        assert_eq!(first_click, SelectWorldAction::None);
-        assert_eq!(menu.pending_delete.as_deref(), Some("w1"));
+        let list = worlds(2);
+        assert_eq!(click(&mut menu, &list, DELETE), Transition::None);
+        assert_eq!(menu.pending_delete.as_deref(), Some("w0"));
 
-        let second_click = menu.handle_mouse_down(&worlds, 490.0, 570.0, 800.0, 600.0);
-        assert_eq!(second_click, SelectWorldAction::Delete("w1".into()));
+        assert_eq!(
+            click(&mut menu, &list, DELETE),
+            Transition::DeleteWorld("w0".into())
+        );
         assert_eq!(menu.pending_delete, None);
     }
 
     #[test]
     fn changing_selection_cancels_delete() {
         let mut menu = SelectWorldMenu::new();
-        let worlds = vec![
-            WorldMeta::new("w1".into(), "World 1".into(), 100),
-            WorldMeta::new("w2".into(), "World 2".into(), 200),
-        ];
-        menu.handle_mouse_down(&worlds, 490.0, 570.0, 800.0, 600.0);
+        let list = worlds(2);
+        click(&mut menu, &list, DELETE);
         assert!(menu.pending_delete.is_some());
 
-        menu.handle_key_down(&worlds, winit::keyboard::KeyCode::ArrowDown);
+        menu.handle_key_down(&list, KeyCode::ArrowDown, H);
         assert_eq!(menu.selected, 1);
         assert_eq!(menu.pending_delete, None);
 
-        menu.handle_mouse_down(&worlds, 490.0, 570.0, 800.0, 600.0);
-        assert_eq!(menu.pending_delete.as_deref(), Some("w2"));
+        click(&mut menu, &list, DELETE);
+        assert_eq!(menu.pending_delete.as_deref(), Some("w1"));
 
-        menu.handle_mouse_move(&worlds, 100.0, 100.0, 800.0, 600.0);
+        click(&mut menu, &list, (100.0, 100.0));
         assert_eq!(menu.selected, 0);
+        assert_eq!(menu.pending_delete, None);
+    }
+
+    #[test]
+    fn hovering_elsewhere_keeps_the_delete_armed() {
+        let mut menu = SelectWorldMenu::new();
+        let list = worlds(2);
+        click(&mut menu, &list, DELETE);
+        menu.handle_mouse_move(&list, 100.0, 170.0, W, H);
+        assert_eq!(menu.pending_delete.as_deref(), Some("w0"));
+    }
+
+    #[test]
+    fn clicking_elsewhere_cancels_delete() {
+        let mut menu = SelectWorldMenu::new();
+        let list = worlds(2);
+        click(&mut menu, &list, DELETE);
+        assert_eq!(click(&mut menu, &list, (400.0, 30.0)), Transition::None);
         assert_eq!(menu.pending_delete, None);
     }
 
     #[test]
     fn escape_cancels_delete_before_leaving() {
         let mut menu = SelectWorldMenu::new();
-        let worlds = vec![WorldMeta::new("w1".into(), "World 1".into(), 100)];
+        let list = worlds(1);
 
-        menu.handle_mouse_down(&worlds, 490.0, 570.0, 800.0, 600.0);
+        click(&mut menu, &list, DELETE);
         assert!(menu.pending_delete.is_some());
 
-        let action = menu.handle_key_down(&worlds, winit::keyboard::KeyCode::Escape);
-        assert_eq!(action, SelectWorldAction::None);
+        assert_eq!(
+            menu.handle_key_down(&list, KeyCode::Escape, H),
+            Transition::None
+        );
         assert_eq!(menu.pending_delete, None);
+        assert_eq!(
+            menu.handle_key_down(&list, KeyCode::Escape, H),
+            Transition::OpenTitle
+        );
+    }
 
-        let action2 = menu.handle_key_down(&worlds, winit::keyboard::KeyCode::Escape);
-        assert_eq!(action2, SelectWorldAction::Back);
+    #[test]
+    fn no_worlds_means_no_delete_button_and_no_play() {
+        let list = worlds(0);
+        let mut menu = SelectWorldMenu::new();
+        assert_eq!(click(&mut menu, &list, DELETE), Transition::None);
+        assert_eq!(menu.pending_delete, None);
+        assert_eq!(click(&mut menu, &list, (100.0, 570.0)), Transition::None);
+        assert_eq!(
+            menu.handle_key_down(&list, KeyCode::ArrowDown, H),
+            Transition::None
+        );
     }
 
     #[test]
@@ -1286,11 +1195,11 @@ mod tests {
         menu.handle_char_input('!');
         assert_eq!(menu.name_input, "New World!");
 
-        menu.handle_key_down(winit::keyboard::KeyCode::Backspace);
+        menu.handle_key_down(KeyCode::Backspace);
         assert_eq!(menu.name_input, "New World");
 
         // Tab switches field
-        menu.handle_key_down(winit::keyboard::KeyCode::Tab);
+        menu.handle_key_down(KeyCode::Tab);
         assert_eq!(menu.active_field, 1);
         menu.handle_char_input('4');
         menu.handle_char_input('2');

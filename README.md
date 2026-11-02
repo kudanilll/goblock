@@ -73,11 +73,13 @@ Every menu works with the mouse. The keys are:
 | Screen     | Keys                                                                                                                             |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | Title      | `Enter` or `Space` world list, `S` settings, `Esc` quit                                                                          |
-| World list | `↑` `↓` select, `Enter` play, `Esc` back                                                                                         |
+| World list | `↑` `↓` or the mouse wheel select, `Enter` play, `Esc` cancels a pending delete, then goes back                                  |
 | New world  | Type to fill in a field, `Tab` or `↑` `↓` switch field, `Enter` create, `Esc` cancel                                             |
 | Settings   | `↑` `↓` pick a row, `←` `→` change it, `Enter` step it up or flip a toggle, `Tab` or `E` next tab, `Q` previous tab, `Esc` close |
 
-The `Create New World` and `Delete` buttons in the world list have no key.
+The `Create New World` and `Delete` buttons in the world list have no key. Clicking a world selects it, and the list scrolls to keep the selected world on screen.
+
+Menus and the HUD grow with the window in whole steps: double size from 1200 pixels tall, triple from 1800.
 
 Pressing `Esc` in a world opens settings over a blurred view of it. The player stops and chunks stop loading until you close the menu. Its `Title Menu` and `Quit Game` buttons save the world before leaving.
 

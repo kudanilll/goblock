@@ -1,6 +1,26 @@
 //! In-game settings data model, scalable tabs, and pixelated UI renderer.
 
+use crate::screens::Transition;
+use crate::ui::{self, Rect, Rgba, Widget};
 use goblock_render::{draw_text, measure_text, push_rect, FontKind, HudVertex};
+
+const WHITE: Rgba = [255, 255, 255, 255];
+const GREEN: Rgba = [80, 230, 160, 255];
+const CONTROL_FILL: Rgba = [0, 0, 0, 120];
+const CONTROL_BORDER: Rgba = [55, 65, 80, 160];
+const PILL_BORDER: Rgba = [65, 75, 95, 160];
+
+const TOP_BAR_HEIGHT: f32 = 60.0;
+const TABS_X: f32 = 240.0;
+const TABS_Y: f32 = 16.0;
+const LIST_TOP: f32 = 85.0;
+const LIST_X: f32 = 50.0;
+const ROW_HEIGHT: f32 = 36.0;
+const ROW_STEP: f32 = 40.0;
+const CATEGORY_HEIGHT: f32 = 28.0;
+const BOTTOM_BAR_HEIGHT: f32 = 48.0;
+/// A slider starts dragging this far either side of its track.
+const TRACK_GRAB_MARGIN: f32 = 10.0;
 
 /// Core game settings.
 #[derive(Debug, Clone, PartialEq)]
@@ -72,13 +92,6 @@ impl Tab {
     }
 }
 
-pub enum Action {
-    None,
-    Close,
-    ReturnToTitle,
-    Quit,
-}
-
 #[derive(Debug, Clone)]
 pub enum SettingKind {
     Slider { min: f32, max: f32, step: f32 },
@@ -95,14 +108,48 @@ pub struct SettingDef {
     pub kind: SettingKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsItem {
+    Back,
+    TitleMenu,
+    Quit,
+    Tab(Tab),
+    Left(usize),
+    Right(usize),
+    Row(usize),
+}
+
+/// One setting row, and where its category heading goes if it starts one.
+struct RowSlot {
+    heading_y: Option<f32>,
+    rect: Rect,
+}
+
+/// The controls inside a row. `middle` is a slider track or a value box.
+struct RowParts {
+    left: Rect,
+    middle: Rect,
+    right: Rect,
+    value: Rect,
+}
+
+impl RowParts {
+    fn of(row: Rect) -> Self {
+        let x = row.x + row.w - 280.0;
+        let y = row.y + 6.0;
+        Self {
+            left: Rect::new(x, y, 24.0, 24.0),
+            middle: Rect::new(x + 34.0, y, 140.0, 24.0),
+            right: Rect::new(x + 184.0, y, 24.0, 24.0),
+            value: Rect::new(x + 216.0, y, 48.0, 24.0),
+        }
+    }
+}
+
 pub struct SettingsMenu {
     pub active_tab: Tab,
     pub selected_row: usize,
-    pub hovered_row: Option<usize>,
-    pub hovered_tab: Option<Tab>,
-    pub back_hovered: bool,
-    pub title_menu_hovered: bool,
-    pub quit_hovered: bool,
+    hovered: Option<SettingsItem>,
     dragging_slider: Option<usize>,
 }
 
@@ -111,11 +158,7 @@ impl SettingsMenu {
         Self {
             active_tab: Tab::Video,
             selected_row: 0,
-            hovered_row: None,
-            hovered_tab: None,
-            back_hovered: false,
-            title_menu_hovered: false,
-            quit_hovered: false,
+            hovered: None,
             dragging_slider: None,
         }
     }
@@ -259,9 +302,18 @@ impl SettingsMenu {
     }
 
     pub fn active_index(&self) -> usize {
-        self.hovered_row
+        self.hovered_row()
             .unwrap_or(self.selected_row)
             .min(self.current_items().len().saturating_sub(1))
+    }
+
+    fn hovered_row(&self) -> Option<usize> {
+        match self.hovered {
+            Some(SettingsItem::Left(row) | SettingsItem::Right(row) | SettingsItem::Row(row)) => {
+                Some(row)
+            }
+            _ => None,
+        }
     }
 
     pub fn adjust_item(&self, settings: &mut Settings, index: usize, direction: f32) {
@@ -304,52 +356,122 @@ impl SettingsMenu {
         }
     }
 
+    fn close(from_title: bool) -> Transition {
+        if from_title {
+            Transition::OpenTitle
+        } else {
+            Transition::ResumeWorld
+        }
+    }
+
     pub fn handle_key_down(
         &mut self,
         settings: &mut Settings,
+        from_title: bool,
         key: winit::keyboard::KeyCode,
-    ) -> Action {
+    ) -> Transition {
         use winit::keyboard::KeyCode;
+        let count = self.current_items().len();
         match key {
-            KeyCode::Escape => Action::Close,
-            KeyCode::ArrowUp => {
-                let count = self.current_items().len();
-                if count > 0 {
-                    self.selected_row = (self.selected_row + count - 1) % count;
-                }
-                Action::None
+            KeyCode::Escape => return Self::close(from_title),
+            KeyCode::ArrowUp if count > 0 => {
+                self.selected_row = (self.selected_row + count - 1) % count;
             }
-            KeyCode::ArrowDown => {
-                let count = self.current_items().len();
-                if count > 0 {
-                    self.selected_row = (self.selected_row + 1) % count;
-                }
-                Action::None
+            KeyCode::ArrowDown if count > 0 => {
+                self.selected_row = (self.selected_row + 1) % count;
             }
-            KeyCode::ArrowLeft => {
-                self.adjust_item(settings, self.active_index(), -1.0);
-                Action::None
-            }
-            KeyCode::ArrowRight => {
-                self.adjust_item(settings, self.active_index(), 1.0);
-                Action::None
+            KeyCode::ArrowLeft => self.adjust_item(settings, self.active_index(), -1.0),
+            KeyCode::ArrowRight | KeyCode::Enter => {
+                self.adjust_item(settings, self.active_index(), 1.0)
             }
             KeyCode::Tab | KeyCode::KeyE => {
                 self.active_tab = self.active_tab.next();
                 self.selected_row = 0;
-                Action::None
             }
             KeyCode::KeyQ => {
                 self.active_tab = self.active_tab.prev();
                 self.selected_row = 0;
-                Action::None
             }
-            KeyCode::Enter => {
-                self.adjust_item(settings, self.active_index(), 1.0);
-                Action::None
-            }
-            _ => Action::None,
+            _ => {}
         }
+        Transition::None
+    }
+
+    fn row_slots(&self, width: f32) -> Vec<RowSlot> {
+        let row_width = (width - 100.0).min(760.0);
+        let mut y = LIST_TOP;
+        let mut category = "";
+        self.current_items()
+            .iter()
+            .map(|item| {
+                let mut heading_y = None;
+                if item.category != category {
+                    category = item.category;
+                    heading_y = Some(y);
+                    y += CATEGORY_HEIGHT;
+                }
+                let rect = Rect::new(LIST_X, y, row_width, ROW_HEIGHT);
+                y += ROW_STEP;
+                RowSlot { heading_y, rect }
+            })
+            .collect()
+    }
+
+    fn tab_strip() -> Vec<Widget<SettingsItem>> {
+        let mut x = TABS_X;
+        Tab::ALL
+            .iter()
+            .map(|&tab| {
+                let name = tab.name().to_uppercase();
+                let w = measure_text(FontKind::Headline, &name, 0.75) + 32.0;
+                let rect = Rect::new(x, TABS_Y, w, 30.0);
+                x += w + 12.0;
+                Widget {
+                    rect,
+                    action: SettingsItem::Tab(tab),
+                }
+            })
+            .collect()
+    }
+
+    /// Bottom buttons and tabs come first, so they win over a row in a window
+    /// too short for the list.
+    fn widgets(&self, from_title: bool, width: f32, height: f32) -> Vec<Widget<SettingsItem>> {
+        let y = height - BOTTOM_BAR_HEIGHT + 8.0;
+        let back_w = 50.0 + measure_text(FontKind::Regular, "BACK", 0.95);
+        let mut widgets = vec![Widget {
+            rect: Rect::new(40.0, y, back_w, 28.0),
+            action: SettingsItem::Back,
+        }];
+        if !from_title {
+            widgets.push(Widget {
+                rect: Rect::new(160.0, y, 140.0, 28.0),
+                action: SettingsItem::TitleMenu,
+            });
+        }
+        let quit_w = measure_text(FontKind::Headline, "QUIT GAME", 0.75) + 36.0;
+        widgets.push(Widget {
+            rect: Rect::new(width - quit_w - 30.0, y, quit_w, 32.0),
+            action: SettingsItem::Quit,
+        });
+        widgets.extend(Self::tab_strip());
+
+        for (index, slot) in self.row_slots(width).iter().enumerate() {
+            let parts = RowParts::of(slot.rect);
+            widgets.push(Widget {
+                rect: parts.left,
+                action: SettingsItem::Left(index),
+            });
+            widgets.push(Widget {
+                rect: parts.right,
+                action: SettingsItem::Right(index),
+            });
+            widgets.push(Widget {
+                rect: slot.rect,
+                action: SettingsItem::Row(index),
+            });
+        }
+        widgets
     }
 
     pub fn handle_mouse_move(
@@ -361,80 +483,20 @@ impl SettingsMenu {
         width: f32,
         height: f32,
     ) {
-        // Back button hitbox (bottom-left [ESC] BACK)
-        let bot_y = height - 44.0;
-        self.back_hovered =
-            (24.0..=140.0).contains(&x) && (bot_y + 4.0..=bot_y + 40.0).contains(&y);
-
-        // Title Menu button hitbox (only when in-game)
-        let title_btn_x = 160.0;
-        let title_btn_w = 140.0;
-        self.title_menu_hovered = !from_title
-            && (title_btn_x..=title_btn_x + title_btn_w).contains(&x)
-            && (bot_y + 4.0..=bot_y + 40.0).contains(&y);
-
-        // Quit button hitbox (bottom-right [QUIT GAME])
-        let quit_w = 140.0;
-        let quit_x = width - quit_w - 24.0;
-        self.quit_hovered =
-            (quit_x..=quit_x + quit_w).contains(&x) && (bot_y + 4.0..=bot_y + 40.0).contains(&y);
-
-        // Tab buttons hitboxes across header
-        let mut tab_x = 240.0;
-        self.hovered_tab = None;
-        for &tab in Tab::ALL.iter() {
-            let name = tab.name().to_uppercase();
-            let text_w = measure_text(FontKind::Headline, &name, 0.7);
-            let tab_w = text_w + 32.0;
-            if (tab_x..=tab_x + tab_w).contains(&x) && (16.0..=52.0).contains(&y) {
-                self.hovered_tab = Some(tab);
-            }
-            tab_x += tab_w + 12.0;
+        self.hovered = ui::hit(&self.widgets(from_title, width, height), x, y);
+        if let Some(row) = self.hovered_row() {
+            self.selected_row = row;
         }
 
-        // Setting rows hitbox
-        let content_x = 50.0;
-        let content_w = (width - 100.0).min(760.0);
-        let list_y = 90.0;
-        let row_h = 36.0;
-        let row_spacing = 4.0;
-        let items = self.current_items();
-        self.hovered_row = None;
-
-        let mut curr_y = list_y;
-        let mut last_category = "";
-        for (i, item) in items.iter().enumerate() {
-            if item.category != last_category {
-                last_category = item.category;
-                curr_y += 28.0;
-            }
-            if (content_x..=content_x + content_w).contains(&x)
-                && (curr_y..=curr_y + row_h).contains(&y)
-            {
-                self.hovered_row = Some(i);
-                self.selected_row = i;
-            }
-            curr_y += row_h + row_spacing;
-        }
-
-        if let Some(dragging) = self.dragging_slider {
-            if dragging < items.len() {
-                let track_x = content_x + content_w - 240.0;
-                let track_w = 150.0;
-                let frac = ((x - track_x) / track_w).clamp(0.0, 1.0);
-                let item = &items[dragging];
-                if let SettingKind::Slider { min, max, .. } = item.kind {
-                    let val = min + frac * (max - min);
-                    match item.id {
-                        "fov" => settings.fov = (val / 5.0).round() * 5.0,
-                        "view_distance" => settings.view_distance = val.round() as i32,
-                        "sens" => settings.sensitivity = (val * 10.0).round() / 10.0,
-                        "master_vol" => settings.master_volume = (val * 20.0).round() / 20.0,
-                        "music_vol" => settings.music_volume = (val * 20.0).round() / 20.0,
-                        "sfx_vol" => settings.sfx_volume = (val * 20.0).round() / 20.0,
-                        _ => {}
-                    }
-                }
+        let Some(row) = self.dragging_slider else {
+            return;
+        };
+        let slots = self.row_slots(width);
+        if let (Some(slot), Some(item)) = (slots.get(row), self.current_items().get(row)) {
+            if let SettingKind::Slider { min, max, .. } = item.kind {
+                let track = RowParts::of(slot.rect).middle;
+                let frac = ((x - track.x) / track.w).clamp(0.0, 1.0);
+                set_slider(settings, item.id, min + frac * (max - min));
             }
         }
     }
@@ -447,63 +509,34 @@ impl SettingsMenu {
         y: f32,
         width: f32,
         height: f32,
-    ) -> Action {
+    ) -> Transition {
         self.handle_mouse_move(settings, from_title, x, y, width, height);
 
-        if self.back_hovered {
-            return Action::Close;
-        }
-
-        if self.title_menu_hovered {
-            return Action::ReturnToTitle;
-        }
-
-        if self.quit_hovered {
-            return Action::Quit;
-        }
-
-        if let Some(tab) = self.hovered_tab {
-            self.active_tab = tab;
-            self.selected_row = 0;
-            return Action::None;
-        }
-
-        if let Some(row) = self.hovered_row {
-            let items = self.current_items();
-            let item = &items[row];
-            let content_x = 50.0;
-            let content_w = (width - 100.0).min(760.0);
-            let ctrl_x = content_x + content_w - 280.0;
-
-            // Arrow left clicked
-            if (ctrl_x..=ctrl_x + 30.0).contains(&x) {
-                self.adjust_item(settings, row, -1.0);
-                return Action::None;
+        match self.hovered {
+            Some(SettingsItem::Back) => return Self::close(from_title),
+            Some(SettingsItem::TitleMenu) => return Transition::LeaveWorld,
+            Some(SettingsItem::Quit) => return Transition::Quit,
+            Some(SettingsItem::Tab(tab)) => {
+                self.active_tab = tab;
+                self.selected_row = 0;
             }
-
-            // Arrow right clicked
-            if (ctrl_x + 200.0..=ctrl_x + 235.0).contains(&x) {
-                self.adjust_item(settings, row, 1.0);
-                return Action::None;
-            }
-
-            match item.kind {
+            Some(SettingsItem::Left(row)) => self.adjust_item(settings, row, -1.0),
+            Some(SettingsItem::Right(row)) => self.adjust_item(settings, row, 1.0),
+            Some(SettingsItem::Row(row)) => match self.current_items()[row].kind {
                 SettingKind::Slider { .. } => {
-                    let track_x = content_x + content_w - 240.0;
-                    let track_w = 150.0;
-                    if (track_x - 10.0..=track_x + track_w + 10.0).contains(&x) {
+                    let track = RowParts::of(self.row_slots(width)[row].rect).middle;
+                    let reach = track.x - TRACK_GRAB_MARGIN..=track.x + track.w + TRACK_GRAB_MARGIN;
+                    if reach.contains(&x) {
                         self.dragging_slider = Some(row);
                         self.handle_mouse_move(settings, from_title, x, y, width, height);
                     }
                 }
-                SettingKind::Toggle => {
-                    self.adjust_item(settings, row, 1.0);
-                }
+                SettingKind::Toggle => self.adjust_item(settings, row, 1.0),
                 SettingKind::Keybind { .. } => {}
-            }
+            },
+            None => {}
         }
-
-        Action::None
+        Transition::None
     }
 
     pub fn handle_mouse_up(&mut self) {
@@ -519,827 +552,391 @@ impl SettingsMenu {
     ) -> Vec<HudVertex> {
         let mut out = Vec::with_capacity(8192);
 
-        // 1. Gentle dark transparent backdrop so game scene is clearly visible
-        push_rect(&mut out, 0.0, 0.0, width, height, [0, 0, 0, 75]);
+        // A light backdrop, so the world stays visible behind the menu.
+        ui::fill(&mut out, Rect::new(0.0, 0.0, width, height), [0, 0, 0, 75]);
 
-        // 2. Top Header Bar (semi-transparent black with fine bottom border)
-        push_rect(&mut out, 0.0, 0.0, width, 60.0, [0, 0, 0, 115]);
-        push_rect(&mut out, 0.0, 59.0, width, 1.0, [45, 50, 65, 140]);
+        self.draw_top_bar(&mut out, width);
 
-        // Headline Title: SETTINGS (upheavtt.ttf)
-        draw_text(
-            &mut out,
-            FontKind::Headline,
-            "SETTINGS",
-            40.0,
-            16.0,
-            1.0,
-            [255, 255, 255, 255],
-        );
-
-        // Tab Navigation Header (Q, Tabs, E) like Image 1
-        let mut tab_x = 240.0;
-        let tab_y = 16.0;
-
-        // [ Q ] Pill
-        push_rect(
-            &mut out,
-            tab_x - 38.0,
-            tab_y + 3.0,
-            26.0,
-            24.0,
-            [0, 0, 0, 120],
-        );
-        push_rect(
-            &mut out,
-            tab_x - 38.0,
-            tab_y + 3.0,
-            26.0,
-            1.0,
-            [65, 75, 95, 160],
-        );
-        push_rect(
-            &mut out,
-            tab_x - 38.0,
-            tab_y + 26.0,
-            26.0,
-            1.0,
-            [65, 75, 95, 160],
-        );
-        push_rect(
-            &mut out,
-            tab_x - 38.0,
-            tab_y + 3.0,
-            1.0,
-            24.0,
-            [65, 75, 95, 160],
-        );
-        push_rect(
-            &mut out,
-            tab_x - 13.0,
-            tab_y + 3.0,
-            1.0,
-            24.0,
-            [65, 75, 95, 160],
-        );
-        draw_text(
-            &mut out,
-            FontKind::Regular,
-            "Q",
-            tab_x - 30.0,
-            tab_y + 6.0,
-            0.9,
-            [170, 185, 205, 255],
-        );
-
-        for &tab in Tab::ALL.iter() {
-            let name = tab.name().to_uppercase();
-            let text_w = measure_text(FontKind::Headline, &name, 0.75);
-            let tab_w = text_w + 32.0; // Proper dynamic width with 16px padding on each side!
-            let tab_h = 30.0;
-            let is_active = self.active_tab == tab;
-            let is_hover = self.hovered_tab == Some(tab);
-
-            if is_active {
-                // Vibrant highlighted tab pill like Image 1 (lime/cyan glow)
-                push_rect(&mut out, tab_x, tab_y, tab_w, tab_h, [80, 230, 160, 240]);
-                push_rect(&mut out, tab_x, tab_y, tab_w, 1.0, [150, 255, 200, 255]);
-                push_rect(
-                    &mut out,
-                    tab_x,
-                    tab_y + tab_h - 1.0,
-                    tab_w,
-                    1.0,
-                    [40, 160, 100, 255],
-                );
-                let center_x = tab_x + (tab_w - text_w) * 0.5;
-                draw_text(
-                    &mut out,
-                    FontKind::Headline,
-                    &name,
-                    center_x,
-                    tab_y + 5.0,
-                    0.75,
-                    [15, 25, 20, 255], // crisp dark text on bright tab
-                );
-            } else {
-                let bg_col = if is_hover {
-                    [35, 45, 60, 180]
-                } else {
-                    [0, 0, 0, 90]
-                };
-                push_rect(&mut out, tab_x, tab_y, tab_w, tab_h, bg_col);
-                push_rect(&mut out, tab_x, tab_y, tab_w, 1.0, [50, 60, 75, 140]);
-                push_rect(
-                    &mut out,
-                    tab_x,
-                    tab_y + tab_h - 1.0,
-                    tab_w,
-                    1.0,
-                    [50, 60, 75, 140],
-                );
-                push_rect(&mut out, tab_x, tab_y, 1.0, tab_h, [50, 60, 75, 140]);
-                push_rect(
-                    &mut out,
-                    tab_x + tab_w - 1.0,
-                    tab_y,
-                    1.0,
-                    tab_h,
-                    [50, 60, 75, 140],
-                );
-                let center_x = tab_x + (tab_w - text_w) * 0.5;
-                draw_text(
-                    &mut out,
-                    FontKind::Headline,
-                    &name,
-                    center_x,
-                    tab_y + 5.0,
-                    0.75,
-                    [170, 185, 205, 230],
-                );
-            }
-
-            tab_x += tab_w + 12.0;
-        }
-
-        // [ E ] Pill
-        push_rect(&mut out, tab_x, tab_y + 3.0, 26.0, 24.0, [0, 0, 0, 120]);
-        push_rect(&mut out, tab_x, tab_y + 3.0, 26.0, 1.0, [65, 75, 95, 160]);
-        push_rect(&mut out, tab_x, tab_y + 26.0, 26.0, 1.0, [65, 75, 95, 160]);
-        push_rect(&mut out, tab_x, tab_y + 3.0, 1.0, 24.0, [65, 75, 95, 160]);
-        push_rect(
-            &mut out,
-            tab_x + 25.0,
-            tab_y + 3.0,
-            1.0,
-            24.0,
-            [65, 75, 95, 160],
-        );
-        draw_text(
-            &mut out,
-            FontKind::Regular,
-            "E",
-            tab_x + 8.0,
-            tab_y + 6.0,
-            0.9,
-            [170, 185, 205, 255],
-        );
-
-        // 3. Main Settings List (Clean, single-pane flow matching Image 1)
-        let content_x = 50.0;
-        let content_w = (width - 100.0).min(760.0);
-        let list_y = 85.0;
-        let row_h = 36.0;
-        let row_spacing = 4.0;
         let items = self.current_items();
-
-        let mut curr_y = list_y;
-        let mut last_category = "";
-
-        for (i, item) in items.iter().enumerate() {
-            // Category header in cyan (upheavtt.ttf)
-            if item.category != last_category {
-                last_category = item.category;
-                draw_text(
-                    &mut out,
-                    FontKind::Headline,
-                    last_category,
-                    content_x + 12.0,
-                    curr_y + 4.0,
-                    0.75,
-                    [60, 215, 240, 255],
-                );
-                curr_y += 28.0;
-            }
-
-            let is_selected = self.selected_row == i;
-            let is_hovered = self.hovered_row == Some(i);
-
-            // Subtle row highlight bar across entire row width
-            if is_selected || is_hovered {
-                push_rect(
-                    &mut out,
-                    content_x,
-                    curr_y,
-                    content_w,
-                    row_h,
-                    [30, 48, 70, 140],
-                );
-                push_rect(&mut out, content_x, curr_y, 3.0, row_h, [80, 230, 160, 255]);
-                push_rect(
-                    &mut out,
-                    content_x,
-                    curr_y,
-                    content_w,
-                    1.0,
-                    [50, 75, 105, 140],
-                );
-                push_rect(
-                    &mut out,
-                    content_x,
-                    curr_y + row_h - 1.0,
-                    content_w,
-                    1.0,
-                    [50, 75, 105, 140],
-                );
-            }
-
-            // Setting Label on left side (eas-vhs.ttf)
-            let label_col = if is_selected || is_hovered {
-                [255, 255, 255, 255]
-            } else {
-                [185, 195, 210, 230]
-            };
-            draw_text(
-                &mut out,
-                FontKind::Regular,
-                item.label,
-                content_x + 16.0,
-                curr_y + 8.0,
-                1.0,
-                label_col,
-            );
-
-            // Control element on right side
-            let ctrl_x = content_x + content_w - 280.0;
-            let arrow_w = 24.0;
-            let arrow_h = 24.0;
-            let arrow_y = curr_y + 6.0;
-
-            let arrow_col = if is_selected || is_hovered {
-                [240, 245, 255, 255]
-            } else {
-                [140, 150, 170, 180]
-            };
-
-            // Left arrow button [ < ]
-            push_rect(&mut out, ctrl_x, arrow_y, arrow_w, arrow_h, [0, 0, 0, 120]);
-            push_rect(&mut out, ctrl_x, arrow_y, arrow_w, 1.0, [55, 65, 80, 160]);
-            push_rect(
-                &mut out,
-                ctrl_x,
-                arrow_y + arrow_h - 1.0,
-                arrow_w,
-                1.0,
-                [55, 65, 80, 160],
-            );
-            push_rect(&mut out, ctrl_x, arrow_y, 1.0, arrow_h, [55, 65, 80, 160]);
-            push_rect(
-                &mut out,
-                ctrl_x + arrow_w - 1.0,
-                arrow_y,
-                1.0,
-                arrow_h,
-                [55, 65, 80, 160],
-            );
-            draw_text(
-                &mut out,
-                FontKind::Regular,
-                "<",
-                ctrl_x + 8.0,
-                arrow_y + 3.0,
-                1.0,
-                arrow_col,
-            );
-
-            match item.kind {
-                SettingKind::Slider { min, max, .. } => {
-                    let val = match item.id {
-                        "fov" => settings.fov,
-                        "view_distance" => settings.view_distance as f32,
-                        "sens" => settings.sensitivity,
-                        "master_vol" => settings.master_volume,
-                        "music_vol" => settings.music_volume,
-                        "sfx_vol" => settings.sfx_volume,
-                        _ => min,
-                    };
-                    let val_text = if max <= 1.0 {
-                        format!("{:.0}%", val * 100.0)
-                    } else if (max - min) > 20.0 {
-                        format!("{:.0}", val)
-                    } else {
-                        format!("{:.1}", val)
-                    };
-
-                    let track_x = ctrl_x + arrow_w + 10.0;
-                    let track_w = 140.0;
-                    let track_y = curr_y + 16.0;
-
-                    // Slider track
-                    push_rect(&mut out, track_x, track_y, track_w, 4.0, [45, 55, 70, 220]);
-
-                    // Filled slider bar (cyan/lime)
-                    let frac = ((val - min) / (max - min)).clamp(0.0, 1.0);
-                    push_rect(
-                        &mut out,
-                        track_x,
-                        track_y,
-                        track_w * frac,
-                        4.0,
-                        [80, 230, 160, 255],
-                    );
-
-                    // Slider knob
-                    let knob_x = track_x + track_w * frac - 4.0;
-                    push_rect(
-                        &mut out,
-                        knob_x,
-                        track_y - 5.0,
-                        8.0,
-                        14.0,
-                        [255, 255, 255, 255],
-                    );
-
-                    // Right arrow button [ > ]
-                    let r_arrow_x = track_x + track_w + 10.0;
-                    push_rect(
-                        &mut out,
-                        r_arrow_x,
-                        arrow_y,
-                        arrow_w,
-                        arrow_h,
-                        [0, 0, 0, 120],
-                    );
-                    push_rect(
-                        &mut out,
-                        r_arrow_x,
-                        arrow_y,
-                        arrow_w,
-                        1.0,
-                        [55, 65, 80, 160],
-                    );
-                    push_rect(
-                        &mut out,
-                        r_arrow_x,
-                        arrow_y + arrow_h - 1.0,
-                        arrow_w,
-                        1.0,
-                        [55, 65, 80, 160],
-                    );
-                    push_rect(
-                        &mut out,
-                        r_arrow_x,
-                        arrow_y,
-                        1.0,
-                        arrow_h,
-                        [55, 65, 80, 160],
-                    );
-                    push_rect(
-                        &mut out,
-                        r_arrow_x + arrow_w - 1.0,
-                        arrow_y,
-                        1.0,
-                        arrow_h,
-                        [55, 65, 80, 160],
-                    );
-                    draw_text(
-                        &mut out,
-                        FontKind::Regular,
-                        ">",
-                        r_arrow_x + 8.0,
-                        arrow_y + 3.0,
-                        1.0,
-                        arrow_col,
-                    );
-
-                    // Value box on far right
-                    let val_box_x = r_arrow_x + arrow_w + 8.0;
-                    let val_box_w = 48.0;
-                    push_rect(
-                        &mut out,
-                        val_box_x,
-                        arrow_y,
-                        val_box_w,
-                        arrow_h,
-                        [0, 0, 0, 140],
-                    );
-                    push_rect(
-                        &mut out,
-                        val_box_x,
-                        arrow_y,
-                        val_box_w,
-                        1.0,
-                        [55, 65, 80, 160],
-                    );
-                    push_rect(
-                        &mut out,
-                        val_box_x,
-                        arrow_y + arrow_h - 1.0,
-                        val_box_w,
-                        1.0,
-                        [55, 65, 80, 160],
-                    );
-                    push_rect(
-                        &mut out,
-                        val_box_x,
-                        arrow_y,
-                        1.0,
-                        arrow_h,
-                        [55, 65, 80, 160],
-                    );
-                    push_rect(
-                        &mut out,
-                        val_box_x + val_box_w - 1.0,
-                        arrow_y,
-                        1.0,
-                        arrow_h,
-                        [55, 65, 80, 160],
-                    );
-                    let vt_w = measure_text(FontKind::Regular, &val_text, 0.95);
-                    let vt_x = val_box_x + (val_box_w - vt_w) * 0.5;
-                    draw_text(
-                        &mut out,
-                        FontKind::Regular,
-                        &val_text,
-                        vt_x,
-                        arrow_y + 3.0,
-                        0.95,
-                        [255, 255, 255, 255],
-                    );
-                }
-                SettingKind::Toggle => {
-                    let state = match item.id {
-                        "reflections" => settings.reflections,
-                        "shadows" => settings.shadows,
-                        "invert_y" => settings.invert_y,
-                        _ => false,
-                    };
-                    let text = if state { "ON" } else { "OFF" };
-                    let text_col = if state {
-                        [80, 230, 160, 255]
-                    } else {
-                        [210, 215, 225, 200]
-                    };
-
-                    let box_x = ctrl_x + arrow_w + 10.0;
-                    let box_w = 140.0;
-                    push_rect(&mut out, box_x, arrow_y, box_w, arrow_h, [0, 0, 0, 120]);
-                    push_rect(&mut out, box_x, arrow_y, box_w, 1.0, [55, 65, 80, 160]);
-                    push_rect(
-                        &mut out,
-                        box_x,
-                        arrow_y + arrow_h - 1.0,
-                        box_w,
-                        1.0,
-                        [55, 65, 80, 160],
-                    );
-                    push_rect(&mut out, box_x, arrow_y, 1.0, arrow_h, [55, 65, 80, 160]);
-                    push_rect(
-                        &mut out,
-                        box_x + box_w - 1.0,
-                        arrow_y,
-                        1.0,
-                        arrow_h,
-                        [55, 65, 80, 160],
-                    );
-
-                    let tw = measure_text(FontKind::Regular, text, 0.95);
-                    let tx = box_x + (box_w - tw) * 0.5;
-                    draw_text(
-                        &mut out,
-                        FontKind::Regular,
-                        text,
-                        tx,
-                        arrow_y + 3.0,
-                        0.95,
-                        text_col,
-                    );
-
-                    // Decorative dashes below like in Image 1
-                    let dash_col = if state {
-                        [80, 230, 160, 255]
-                    } else {
-                        [70, 75, 85, 200]
-                    };
-                    push_rect(&mut out, box_x + 55.0, arrow_y + 20.0, 14.0, 2.0, dash_col);
-                    push_rect(&mut out, box_x + 73.0, arrow_y + 20.0, 14.0, 2.0, dash_col);
-
-                    // Right arrow button [ > ]
-                    let r_arrow_x = box_x + box_w + 10.0;
-                    push_rect(
-                        &mut out,
-                        r_arrow_x,
-                        arrow_y,
-                        arrow_w,
-                        arrow_h,
-                        [0, 0, 0, 120],
-                    );
-                    push_rect(
-                        &mut out,
-                        r_arrow_x,
-                        arrow_y,
-                        arrow_w,
-                        1.0,
-                        [55, 65, 80, 160],
-                    );
-                    push_rect(
-                        &mut out,
-                        r_arrow_x,
-                        arrow_y + arrow_h - 1.0,
-                        arrow_w,
-                        1.0,
-                        [55, 65, 80, 160],
-                    );
-                    push_rect(
-                        &mut out,
-                        r_arrow_x,
-                        arrow_y,
-                        1.0,
-                        arrow_h,
-                        [55, 65, 80, 160],
-                    );
-                    push_rect(
-                        &mut out,
-                        r_arrow_x + arrow_w - 1.0,
-                        arrow_y,
-                        1.0,
-                        arrow_h,
-                        [55, 65, 80, 160],
-                    );
-                    draw_text(
-                        &mut out,
-                        FontKind::Regular,
-                        ">",
-                        r_arrow_x + 8.0,
-                        arrow_y + 3.0,
-                        1.0,
-                        arrow_col,
-                    );
-                }
-                SettingKind::Keybind { key } => {
-                    let box_x = ctrl_x + arrow_w + 10.0;
-                    let box_w = 140.0;
-                    push_rect(&mut out, box_x, arrow_y, box_w, arrow_h, [0, 0, 0, 120]);
-                    push_rect(&mut out, box_x, arrow_y, box_w, 1.0, [55, 65, 80, 160]);
-                    push_rect(
-                        &mut out,
-                        box_x,
-                        arrow_y + arrow_h - 1.0,
-                        box_w,
-                        1.0,
-                        [55, 65, 80, 160],
-                    );
-                    push_rect(&mut out, box_x, arrow_y, 1.0, arrow_h, [55, 65, 80, 160]);
-                    push_rect(
-                        &mut out,
-                        box_x + box_w - 1.0,
-                        arrow_y,
-                        1.0,
-                        arrow_h,
-                        [55, 65, 80, 160],
-                    );
-
-                    let kw = measure_text(FontKind::Regular, key, 0.95);
-                    let kx = box_x + (box_w - kw) * 0.5;
-                    draw_text(
-                        &mut out,
-                        FontKind::Regular,
-                        key,
-                        kx,
-                        arrow_y + 3.0,
-                        0.95,
-                        [255, 255, 255, 255],
-                    );
-
-                    // Right arrow button [ > ]
-                    let r_arrow_x = box_x + box_w + 10.0;
-                    push_rect(
-                        &mut out,
-                        r_arrow_x,
-                        arrow_y,
-                        arrow_w,
-                        arrow_h,
-                        [0, 0, 0, 120],
-                    );
-                    push_rect(
-                        &mut out,
-                        r_arrow_x,
-                        arrow_y,
-                        arrow_w,
-                        1.0,
-                        [55, 65, 80, 160],
-                    );
-                    push_rect(
-                        &mut out,
-                        r_arrow_x,
-                        arrow_y + arrow_h - 1.0,
-                        arrow_w,
-                        1.0,
-                        [55, 65, 80, 160],
-                    );
-                    push_rect(
-                        &mut out,
-                        r_arrow_x,
-                        arrow_y,
-                        1.0,
-                        arrow_h,
-                        [55, 65, 80, 160],
-                    );
-                    push_rect(
-                        &mut out,
-                        r_arrow_x + arrow_w - 1.0,
-                        arrow_y,
-                        1.0,
-                        arrow_h,
-                        [55, 65, 80, 160],
-                    );
-                    draw_text(
-                        &mut out,
-                        FontKind::Regular,
-                        ">",
-                        r_arrow_x + 8.0,
-                        arrow_y + 3.0,
-                        1.0,
-                        arrow_col,
-                    );
-                }
-            }
-
-            curr_y += row_h + row_spacing;
+        for (index, (item, slot)) in items.iter().zip(self.row_slots(width)).enumerate() {
+            self.draw_row(&mut out, settings, item, index, &slot);
         }
 
-        // 4. Item Description Toast (Above bottom bar)
-        let active_idx = self.active_index();
-        if let Some(active_item) = items.get(active_idx) {
-            let desc_y = height - 80.0;
+        if let Some(item) = items.get(self.active_index()) {
             draw_text(
                 &mut out,
                 FontKind::Regular,
-                &format!("* {}", active_item.description),
-                50.0,
-                desc_y,
+                &format!("* {}", item.description),
+                LIST_X,
+                height - 80.0,
                 0.95,
                 [180, 225, 240, 255],
             );
         }
 
-        // 5. Bottom Navigation Bar matching Image 1
-        let bot_y = height - 48.0;
-        push_rect(&mut out, 0.0, bot_y, width, 48.0, [0, 0, 0, 130]);
-        push_rect(&mut out, 0.0, bot_y, width, 1.0, [45, 50, 65, 140]);
-
-        // Left button: [ESC] BACK (properly padded, no overflow!)
-        let back_pill_w = 40.0;
-        let back_bg = if self.back_hovered {
-            [60, 75, 95, 240]
-        } else {
-            [0, 0, 0, 150]
-        };
-        push_rect(&mut out, 40.0, bot_y + 8.0, back_pill_w, 28.0, back_bg);
-        push_rect(
+        ui::action_bar(
             &mut out,
-            40.0,
-            bot_y + 8.0,
-            back_pill_w,
-            1.0,
-            [80, 95, 120, 200],
+            width,
+            height,
+            BOTTOM_BAR_HEIGHT,
+            [0, 0, 0, 130],
+            [45, 50, 65, 140],
         );
-        push_rect(
-            &mut out,
-            40.0,
-            bot_y + 35.0,
-            back_pill_w,
-            1.0,
-            [80, 95, 120, 200],
-        );
-        push_rect(&mut out, 40.0, bot_y + 8.0, 1.0, 28.0, [80, 95, 120, 200]);
-        push_rect(
-            &mut out,
-            40.0 + back_pill_w - 1.0,
-            bot_y + 8.0,
-            1.0,
-            28.0,
-            [80, 95, 120, 200],
-        );
-        draw_text(
-            &mut out,
-            FontKind::Regular,
-            "ESC",
-            47.0,
-            bot_y + 13.0,
-            0.85,
-            [255, 255, 255, 255],
-        );
-        draw_text(
-            &mut out,
-            FontKind::Regular,
-            "BACK",
-            90.0,
-            bot_y + 13.0,
-            0.95,
-            [210, 220, 235, 255],
-        );
-
-        if !from_title {
-            let title_btn_x = 160.0;
-            let title_btn_w = 140.0;
-            let title_bg = if self.title_menu_hovered {
-                [40, 55, 80, 230]
-            } else {
-                [20, 28, 42, 170]
-            };
-            push_rect(
-                &mut out,
-                title_btn_x,
-                bot_y + 8.0,
-                title_btn_w,
-                28.0,
-                title_bg,
-            );
-            let border_col = if self.title_menu_hovered {
-                [80, 160, 240, 255]
-            } else {
-                [50, 65, 90, 180]
-            };
-            push_rect(
-                &mut out,
-                title_btn_x,
-                bot_y + 8.0,
-                title_btn_w,
-                1.0,
-                border_col,
-            );
-            push_rect(
-                &mut out,
-                title_btn_x,
-                bot_y + 35.0,
-                title_btn_w,
-                1.0,
-                border_col,
-            );
-            push_rect(&mut out, title_btn_x, bot_y + 8.0, 1.0, 28.0, border_col);
-            push_rect(
-                &mut out,
-                title_btn_x + title_btn_w - 1.0,
-                bot_y + 8.0,
-                1.0,
-                28.0,
-                border_col,
-            );
-            draw_text(
-                &mut out,
-                FontKind::Headline,
-                "TITLE MENU",
-                title_btn_x + 18.0,
-                bot_y + 13.0,
-                0.65,
-                [255, 255, 255, 255],
-            );
+        for widget in self.widgets(from_title, width, height) {
+            self.draw_bottom_button(&mut out, &widget);
         }
-
-        // Right button: [QUIT GAME] (Calculated width, perfectly fitted, zero overflow!)
-        let quit_text = "QUIT GAME";
-        let quit_scale = 0.75;
-        let quit_text_w = measure_text(FontKind::Headline, quit_text, quit_scale);
-        let quit_pad_x = 18.0;
-        let quit_w = quit_text_w + quit_pad_x * 2.0;
-        let quit_h = 32.0;
-        let quit_x = width - quit_w - 30.0;
-        let quit_y = bot_y + 8.0;
-
-        let quit_bg = if self.quit_hovered {
-            [220, 45, 45, 240]
-        } else {
-            [150, 35, 35, 200]
-        };
-        push_rect(&mut out, quit_x, quit_y, quit_w, quit_h, quit_bg);
-        push_rect(&mut out, quit_x, quit_y, quit_w, 1.0, [255, 120, 120, 255]);
-        push_rect(
-            &mut out,
-            quit_x,
-            quit_y + quit_h - 1.0,
-            quit_w,
-            1.0,
-            [100, 20, 20, 255],
-        );
-        push_rect(&mut out, quit_x, quit_y, 1.0, quit_h, [255, 120, 120, 255]);
-        push_rect(
-            &mut out,
-            quit_x + quit_w - 1.0,
-            quit_y,
-            1.0,
-            quit_h,
-            [100, 20, 20, 255],
-        );
-
-        let quit_tx = quit_x + quit_pad_x;
-        draw_text(
-            &mut out,
-            FontKind::Headline,
-            quit_text,
-            quit_tx,
-            quit_y + 6.0,
-            quit_scale,
-            [255, 255, 255, 255],
-        );
 
         out
     }
+
+    fn draw_top_bar(&self, out: &mut Vec<HudVertex>, width: f32) {
+        ui::header_bar(
+            out,
+            width,
+            TOP_BAR_HEIGHT,
+            [0, 0, 0, 115],
+            [45, 50, 65, 140],
+        );
+        draw_text(
+            out,
+            FontKind::Headline,
+            "SETTINGS",
+            40.0,
+            TABS_Y,
+            1.0,
+            WHITE,
+        );
+
+        key_pill(out, TABS_X - 38.0, "Q");
+        let tabs = Self::tab_strip();
+        for widget in &tabs {
+            if let SettingsItem::Tab(tab) = widget.action {
+                self.draw_tab(out, tab, widget.rect);
+            }
+        }
+        if let Some(last) = tabs.last() {
+            key_pill(out, last.rect.x + last.rect.w + 12.0, "E");
+        }
+    }
+
+    fn draw_tab(&self, out: &mut Vec<HudVertex>, tab: Tab, r: Rect) {
+        let name = tab.name().to_uppercase();
+        if self.active_tab == tab {
+            ui::banded(
+                out,
+                r,
+                [80, 230, 160, 240],
+                [150, 255, 200, 255],
+                [40, 160, 100, 255],
+            );
+            ui::centered_text(
+                out,
+                FontKind::Headline,
+                &name,
+                r,
+                5.0,
+                0.75,
+                [15, 25, 20, 255],
+            );
+        } else {
+            let bg = if self.hovered == Some(SettingsItem::Tab(tab)) {
+                [35, 45, 60, 180]
+            } else {
+                [0, 0, 0, 90]
+            };
+            ui::outlined(out, r, bg, [50, 60, 75, 140]);
+            ui::centered_text(
+                out,
+                FontKind::Headline,
+                &name,
+                r,
+                5.0,
+                0.75,
+                [170, 185, 205, 230],
+            );
+        }
+    }
+
+    fn draw_row(
+        &self,
+        out: &mut Vec<HudVertex>,
+        settings: &Settings,
+        item: &SettingDef,
+        index: usize,
+        slot: &RowSlot,
+    ) {
+        let r = slot.rect;
+        if let Some(y) = slot.heading_y {
+            draw_text(
+                out,
+                FontKind::Headline,
+                item.category,
+                r.x + 12.0,
+                y + 4.0,
+                0.75,
+                [60, 215, 240, 255],
+            );
+        }
+
+        let lit = self.selected_row == index || self.hovered_row() == Some(index);
+        if lit {
+            ui::fill(out, r, [30, 48, 70, 140]);
+            ui::fill(out, Rect::new(r.x, r.y, 3.0, r.h), GREEN);
+            ui::fill(out, Rect::new(r.x, r.y, r.w, 1.0), [50, 75, 105, 140]);
+            ui::fill(
+                out,
+                Rect::new(r.x, r.y + r.h - 1.0, r.w, 1.0),
+                [50, 75, 105, 140],
+            );
+        }
+
+        let label_color = if lit { WHITE } else { [185, 195, 210, 230] };
+        draw_text(
+            out,
+            FontKind::Regular,
+            item.label,
+            r.x + 16.0,
+            r.y + 8.0,
+            1.0,
+            label_color,
+        );
+
+        let arrow_color = if lit {
+            [240, 245, 255, 255]
+        } else {
+            [140, 150, 170, 180]
+        };
+        let parts = RowParts::of(r);
+        arrow_button(out, parts.left, "<", arrow_color);
+
+        match item.kind {
+            SettingKind::Slider { min, max, .. } => {
+                let value = slider_value(settings, item.id).unwrap_or(min);
+                draw_slider(out, &parts, value, min, max, arrow_color);
+            }
+            SettingKind::Toggle => {
+                draw_toggle(out, &parts, toggle_value(settings, item.id));
+                arrow_button(out, parts.right, ">", arrow_color);
+            }
+            SettingKind::Keybind { key } => {
+                ui::outlined(out, parts.middle, CONTROL_FILL, CONTROL_BORDER);
+                ui::centered_text(out, FontKind::Regular, key, parts.middle, 3.0, 0.95, WHITE);
+                arrow_button(out, parts.right, ">", arrow_color);
+            }
+        }
+    }
+
+    fn draw_bottom_button(&self, out: &mut Vec<HudVertex>, widget: &Widget<SettingsItem>) {
+        let r = widget.rect;
+        let hovered = self.hovered == Some(widget.action);
+        match widget.action {
+            SettingsItem::Back => {
+                let bg = if hovered {
+                    [60, 75, 95, 240]
+                } else {
+                    [0, 0, 0, 150]
+                };
+                ui::outlined(out, Rect::new(r.x, r.y, 40.0, r.h), bg, [80, 95, 120, 200]);
+                draw_text(
+                    out,
+                    FontKind::Regular,
+                    "ESC",
+                    r.x + 7.0,
+                    r.y + 5.0,
+                    0.85,
+                    WHITE,
+                );
+                draw_text(
+                    out,
+                    FontKind::Regular,
+                    "BACK",
+                    r.x + 50.0,
+                    r.y + 5.0,
+                    0.95,
+                    [210, 220, 235, 255],
+                );
+            }
+            SettingsItem::TitleMenu => {
+                let (bg, border) = if hovered {
+                    ([40, 55, 80, 230], [80, 160, 240, 255])
+                } else {
+                    ([20, 28, 42, 170], [50, 65, 90, 180])
+                };
+                ui::outlined(out, r, bg, border);
+                draw_text(
+                    out,
+                    FontKind::Headline,
+                    "TITLE MENU",
+                    r.x + 18.0,
+                    r.y + 5.0,
+                    0.65,
+                    WHITE,
+                );
+            }
+            SettingsItem::Quit => {
+                let bg = if hovered {
+                    [220, 45, 45, 240]
+                } else {
+                    [150, 35, 35, 200]
+                };
+                ui::panel(out, r, bg, [255, 120, 120, 255], [100, 20, 20, 255], 1.0);
+                draw_text(
+                    out,
+                    FontKind::Headline,
+                    "QUIT GAME",
+                    r.x + 18.0,
+                    r.y + 6.0,
+                    0.75,
+                    WHITE,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+fn slider_value(settings: &Settings, id: &str) -> Option<f32> {
+    match id {
+        "fov" => Some(settings.fov),
+        "view_distance" => Some(settings.view_distance as f32),
+        "sens" => Some(settings.sensitivity),
+        "master_vol" => Some(settings.master_volume),
+        "music_vol" => Some(settings.music_volume),
+        "sfx_vol" => Some(settings.sfx_volume),
+        _ => None,
+    }
+}
+
+/// Stores a dragged value, rounded to the steps each slider moves in.
+fn set_slider(settings: &mut Settings, id: &str, value: f32) {
+    match id {
+        "fov" => settings.fov = (value / 5.0).round() * 5.0,
+        "view_distance" => settings.view_distance = value.round() as i32,
+        "sens" => settings.sensitivity = (value * 10.0).round() / 10.0,
+        "master_vol" => settings.master_volume = (value * 20.0).round() / 20.0,
+        "music_vol" => settings.music_volume = (value * 20.0).round() / 20.0,
+        "sfx_vol" => settings.sfx_volume = (value * 20.0).round() / 20.0,
+        _ => {}
+    }
+}
+
+fn toggle_value(settings: &Settings, id: &str) -> bool {
+    match id {
+        "reflections" => settings.reflections,
+        "shadows" => settings.shadows,
+        "invert_y" => settings.invert_y,
+        _ => false,
+    }
+}
+
+fn value_text(value: f32, min: f32, max: f32) -> String {
+    if max <= 1.0 {
+        format!("{:.0}%", value * 100.0)
+    } else if (max - min) > 20.0 {
+        format!("{:.0}", value)
+    } else {
+        format!("{:.1}", value)
+    }
+}
+
+/// The small key hint beside the tabs.
+fn key_pill(out: &mut Vec<HudVertex>, x: f32, key: &str) {
+    let y = TABS_Y + 3.0;
+    ui::outlined(out, Rect::new(x, y, 26.0, 24.0), CONTROL_FILL, PILL_BORDER);
+    draw_text(
+        out,
+        FontKind::Regular,
+        key,
+        x + 8.0,
+        y + 3.0,
+        0.9,
+        [170, 185, 205, 255],
+    );
+}
+
+fn arrow_button(out: &mut Vec<HudVertex>, r: Rect, glyph: &str, color: Rgba) {
+    ui::outlined(out, r, CONTROL_FILL, CONTROL_BORDER);
+    draw_text(
+        out,
+        FontKind::Regular,
+        glyph,
+        r.x + 8.0,
+        r.y + 3.0,
+        1.0,
+        color,
+    );
+}
+
+fn draw_slider(
+    out: &mut Vec<HudVertex>,
+    parts: &RowParts,
+    value: f32,
+    min: f32,
+    max: f32,
+    arrow_color: Rgba,
+) {
+    let track = parts.middle;
+    let y = track.y + 10.0;
+    let frac = ((value - min) / (max - min)).clamp(0.0, 1.0);
+    push_rect(out, track.x, y, track.w, 4.0, [45, 55, 70, 220]);
+    push_rect(out, track.x, y, track.w * frac, 4.0, GREEN);
+    push_rect(
+        out,
+        track.x + track.w * frac - 4.0,
+        y - 5.0,
+        8.0,
+        14.0,
+        WHITE,
+    );
+
+    arrow_button(out, parts.right, ">", arrow_color);
+
+    ui::outlined(out, parts.value, [0, 0, 0, 140], CONTROL_BORDER);
+    ui::centered_text(
+        out,
+        FontKind::Regular,
+        &value_text(value, min, max),
+        parts.value,
+        3.0,
+        0.95,
+        WHITE,
+    );
+}
+
+fn draw_toggle(out: &mut Vec<HudVertex>, parts: &RowParts, on: bool) {
+    let r = parts.middle;
+    let (text, text_color, dash_color) = if on {
+        ("ON", GREEN, GREEN)
+    } else {
+        ("OFF", [210, 215, 225, 200], [70, 75, 85, 200])
+    };
+    ui::outlined(out, r, CONTROL_FILL, CONTROL_BORDER);
+    ui::centered_text(out, FontKind::Regular, text, r, 3.0, 0.95, text_color);
+    push_rect(out, r.x + 55.0, r.y + 20.0, 14.0, 2.0, dash_color);
+    push_rect(out, r.x + 73.0, r.y + 20.0, 14.0, 2.0, dash_color);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const W: f32 = 800.0;
+    const H: f32 = 600.0;
+    const SIZES: [(f32, f32); 3] = [(800.0, 600.0), (1920.0, 1080.0), (3840.0, 2160.0)];
+
+    fn rect_of(menu: &SettingsMenu, item: SettingsItem) -> Rect {
+        menu.widgets(true, W, H)
+            .iter()
+            .find(|widget| widget.action == item)
+            .expect("widget is listed")
+            .rect
+    }
+
+    fn click_center(menu: &mut SettingsMenu, settings: &mut Settings, item: SettingsItem) {
+        let (x, y) = rect_of(menu, item).center();
+        menu.handle_mouse_down(settings, true, x, y, W, H);
+        menu.handle_mouse_up();
+    }
 
     #[test]
     fn default_settings_values_are_valid() {
@@ -1389,46 +986,153 @@ mod tests {
     }
 
     #[test]
-    fn mouse_click_on_back_returns_close() {
-        let mut menu = SettingsMenu::new();
-        let mut settings = Settings::default();
-        let action = menu.handle_mouse_down(&mut settings, true, 50.0, 570.0, 800.0, 600.0);
-        assert!(matches!(action, Action::Close));
+    fn every_widget_fires_at_its_center() {
+        for (w, h) in SIZES {
+            for from_title in [true, false] {
+                for tab in Tab::ALL {
+                    let mut listing = SettingsMenu::new();
+                    listing.active_tab = tab;
+                    for widget in listing.widgets(from_title, w, h) {
+                        let (x, y) = widget.rect.center();
+                        let mut menu = SettingsMenu::new();
+                        menu.active_tab = tab;
+                        let mut settings = Settings::default();
+                        let action = menu.handle_mouse_down(&mut settings, from_title, x, y, w, h);
+                        match widget.action {
+                            SettingsItem::Back => {
+                                assert_eq!(action, SettingsMenu::close(from_title))
+                            }
+                            SettingsItem::TitleMenu => assert_eq!(action, Transition::LeaveWorld),
+                            SettingsItem::Quit => assert_eq!(action, Transition::Quit),
+                            SettingsItem::Tab(clicked) => assert_eq!(menu.active_tab, clicked),
+                            SettingsItem::Left(row)
+                            | SettingsItem::Right(row)
+                            | SettingsItem::Row(row) => {
+                                assert_eq!(action, Transition::None);
+                                assert_eq!(menu.selected_row, row, "at {w}x{h}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
-    fn mouse_click_on_title_menu_returns_return_to_title() {
-        let mut menu = SettingsMenu::new();
-        let mut settings = Settings::default();
-        // Title menu button when from_title is false at x = 160..300, y = 556..596
-        let action = menu.handle_mouse_down(&mut settings, false, 200.0, 570.0, 800.0, 600.0);
-        assert!(matches!(action, Action::ReturnToTitle));
+    fn title_menu_button_only_exists_in_a_world() {
+        let menu = SettingsMenu::new();
+        let has_button = |from_title: bool| {
+            menu.widgets(from_title, W, H)
+                .iter()
+                .any(|widget| widget.action == SettingsItem::TitleMenu)
+        };
+        assert!(has_button(false));
+        assert!(!has_button(true));
     }
 
     #[test]
-    fn mouse_click_on_quit_returns_quit() {
+    fn drawn_arrows_step_the_value() {
         let mut menu = SettingsMenu::new();
         let mut settings = Settings::default();
-        // Quit button is on bottom right
-        let action = menu.handle_mouse_down(&mut settings, true, 730.0, 570.0, 800.0, 600.0);
-        assert!(matches!(action, Action::Quit));
+
+        click_center(&mut menu, &mut settings, SettingsItem::Right(0));
+        assert_eq!(settings.fov, 75.0);
+        click_center(&mut menu, &mut settings, SettingsItem::Left(0));
+        assert_eq!(settings.fov, 70.0);
+
+        // The left edge of the right arrow is part of the arrow, not the track.
+        let right = rect_of(&menu, SettingsItem::Right(0));
+        menu.handle_mouse_down(&mut settings, true, right.x + 1.0, right.y + 5.0, W, H);
+        assert_eq!(settings.fov, 75.0);
+        assert_eq!(menu.dragging_slider, None);
     }
 
     #[test]
-    fn mouse_click_on_arrows_adjusts_slider() {
+    fn value_box_does_not_step_the_value() {
         let mut menu = SettingsMenu::new();
-        menu.active_tab = Tab::Video;
         let mut settings = Settings::default();
-        let before_fov = settings.fov;
+        let right = rect_of(&menu, SettingsItem::Right(0));
+        let (x, y) = (right.x + right.w + 20.0, right.y + 12.0);
+        menu.handle_mouse_down(&mut settings, true, x, y, W, H);
+        assert_eq!(settings.fov, 70.0);
+    }
 
-        // Click right arrow on FOV row
-        // content_x = 50.0, content_w = 700.0, ctrl_x = 50 + 700 - 280 = 470.0
-        // arrow right: ctrl_x + 200..=ctrl_x + 235 = 670..=705
-        let action = menu.handle_mouse_down(&mut settings, true, 680.0, 120.0, 800.0, 600.0);
-        assert!(matches!(action, Action::None));
-        assert!(
-            settings.fov > before_fov,
-            "fov should increase on right arrow click"
+    #[test]
+    fn hover_starts_at_the_top_of_the_drawn_row() {
+        let mut menu = SettingsMenu::new();
+        let mut settings = Settings::default();
+        let row = rect_of(&menu, SettingsItem::Row(0));
+        menu.handle_mouse_move(&mut settings, true, row.x + 5.0, row.y + 1.0, W, H);
+        assert_eq!(menu.hovered_row(), Some(0));
+        menu.handle_mouse_move(&mut settings, true, row.x + 5.0, row.y - 1.0, W, H);
+        assert_eq!(menu.hovered_row(), None);
+    }
+
+    #[test]
+    fn slider_drag_follows_the_drawn_track() {
+        let mut menu = SettingsMenu::new();
+        let mut settings = Settings::default();
+        let track = RowParts::of(rect_of(&menu, SettingsItem::Row(0))).middle;
+        let (x, y) = track.center();
+
+        menu.handle_mouse_down(&mut settings, true, x, y, W, H);
+        assert_eq!(settings.fov, 85.0);
+
+        menu.handle_mouse_move(&mut settings, true, track.x, y, W, H);
+        assert_eq!(settings.fov, 60.0);
+        menu.handle_mouse_move(&mut settings, true, track.x + track.w, y, W, H);
+        assert_eq!(settings.fov, 110.0);
+
+        menu.handle_mouse_up();
+        menu.handle_mouse_move(&mut settings, true, track.x, y, W, H);
+        assert_eq!(settings.fov, 110.0);
+    }
+
+    #[test]
+    fn clicking_a_toggle_row_flips_it() {
+        let mut menu = SettingsMenu::new();
+        let mut settings = Settings::default();
+        click_center(&mut menu, &mut settings, SettingsItem::Row(2));
+        assert!(!settings.reflections);
+    }
+
+    #[test]
+    fn keys_step_tabs_and_rows() {
+        use winit::keyboard::KeyCode;
+        let mut menu = SettingsMenu::new();
+        let mut settings = Settings::default();
+
+        menu.handle_key_down(&mut settings, true, KeyCode::ArrowDown);
+        assert_eq!(menu.selected_row, 1);
+        menu.handle_key_down(&mut settings, true, KeyCode::ArrowUp);
+        menu.handle_key_down(&mut settings, true, KeyCode::ArrowUp);
+        assert_eq!(menu.selected_row, 3);
+
+        menu.handle_key_down(&mut settings, true, KeyCode::KeyE);
+        assert_eq!((menu.active_tab, menu.selected_row), (Tab::Controls, 0));
+        menu.handle_key_down(&mut settings, true, KeyCode::KeyQ);
+        assert_eq!(menu.active_tab, Tab::Video);
+
+        menu.handle_key_down(&mut settings, true, KeyCode::ArrowRight);
+        assert_eq!(settings.fov, 75.0);
+        menu.handle_key_down(&mut settings, true, KeyCode::Enter);
+        assert_eq!(settings.fov, 80.0);
+        menu.handle_key_down(&mut settings, true, KeyCode::ArrowLeft);
+        assert_eq!(settings.fov, 75.0);
+    }
+
+    #[test]
+    fn escape_closes_to_where_settings_came_from() {
+        use winit::keyboard::KeyCode;
+        let mut menu = SettingsMenu::new();
+        let mut settings = Settings::default();
+        assert_eq!(
+            menu.handle_key_down(&mut settings, true, KeyCode::Escape),
+            Transition::OpenTitle
+        );
+        assert_eq!(
+            menu.handle_key_down(&mut settings, false, KeyCode::Escape),
+            Transition::ResumeWorld
         );
     }
 }
