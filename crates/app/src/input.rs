@@ -38,6 +38,7 @@ impl DesktopInput {
         window.set_cursor_visible(true);
         self.first_mouse = true;
         self.look_delta = Vec2::ZERO;
+        self.mouse_captured = false;
     }
 
     pub fn capture_cursor_grab(&mut self, window: &Window) {
@@ -70,6 +71,7 @@ impl DesktopInput {
             }
             WindowEvent::Focused(false) => {
                 self.keys.clear();
+                self.mouse_captured = false;
             }
             _ => {}
         }
@@ -133,6 +135,7 @@ impl InputSource for DesktopInput {
             // Mouse Y grows downward on screen; camera pitch grows upward.
             look_delta: Vec2::new(look_delta.x, -look_delta.y),
             sprint,
+            dig: self.mouse_captured,
         }
     }
 }
@@ -200,5 +203,25 @@ mod tests {
         let state = input.poll();
         assert_eq!(state.look_delta, Vec2::new(3.0, -5.0));
         assert_eq!(input.poll().look_delta, Vec2::ZERO);
+    }
+
+    #[test]
+    fn left_click_sets_dig_state() {
+        let mut input = DesktopInput::new();
+        assert!(!input.poll().dig);
+
+        input.handle_window_event(&WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        });
+        assert!(input.poll().dig);
+
+        input.handle_window_event(&WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        });
+        assert!(!input.poll().dig);
     }
 }

@@ -8,6 +8,7 @@ pub mod block;
 pub mod chunk;
 mod generate;
 pub mod mesh;
+pub mod raycast;
 pub mod terrain;
 mod world;
 
@@ -15,5 +16,6 @@ pub use biome::Biome;
 pub use block::{BlockId, Face, RenderLayer, Texture};
 pub use chunk::{chunk_of, Chunk, CHUNK_SIZE, WORLD_HEIGHT};
 pub use mesh::{ChunkMesh, ChunkVertex};
+pub use raycast::{raycast, RaycastHit};
 pub use terrain::{Terrain, SEA_LEVEL};
 pub use world::{World, WorldEvent};

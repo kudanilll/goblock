@@ -122,6 +122,93 @@ impl World {
         }
     }
 
+    /// Change the block at world coordinates `p` and immediately remesh the
+    /// affected chunk and its borders. Returns any remesh events to be sent to
+    /// the renderer.
+    pub fn set_block(&mut self, p: IVec3, block: BlockId) -> Vec<WorldEvent> {
+        let pos = chunk_of(p.x, p.z);
+        let Some(chunk) = self.chunks.get_mut(&pos) else {
+            return Vec::new();
+        };
+
+        let local_x = p.x - pos.x * CHUNK_SIZE;
+        let local_y = p.y;
+        let local_z = p.z - pos.y * CHUNK_SIZE;
+
+        let chunk_mut = Arc::make_mut(chunk);
+        let old = chunk_mut.get(local_x, local_y, local_z);
+        if old == block {
+            return Vec::new();
+        }
+        chunk_mut.set(local_x, local_y, local_z, block);
+
+        let mut to_remesh = vec![pos];
+        let on_west = local_x == 0;
+        let on_east = local_x == CHUNK_SIZE - 1;
+        let on_north = local_z == 0;
+        let on_south = local_z == CHUNK_SIZE - 1;
+
+        if on_west {
+            to_remesh.push(pos + IVec2::new(-1, 0));
+        }
+        if on_east {
+            to_remesh.push(pos + IVec2::new(1, 0));
+        }
+        if on_north {
+            to_remesh.push(pos + IVec2::new(0, -1));
+        }
+        if on_south {
+            to_remesh.push(pos + IVec2::new(0, 1));
+        }
+        if on_west && on_north {
+            to_remesh.push(pos + IVec2::new(-1, -1));
+        }
+        if on_west && on_south {
+            to_remesh.push(pos + IVec2::new(-1, 1));
+        }
+        if on_east && on_north {
+            to_remesh.push(pos + IVec2::new(1, -1));
+        }
+        if on_east && on_south {
+            to_remesh.push(pos + IVec2::new(1, 1));
+        }
+
+        let mut events = Vec::new();
+        for chunk_pos in to_remesh {
+            if self.meshed.contains(&chunk_pos) {
+                if let Some(area) = neighbourhood(&self.chunks, chunk_pos) {
+                    let chunks = std::array::from_fn(|i| &*area[i]);
+                    let mesh = build_mesh(chunks);
+                    events.push(WorldEvent::Meshed(chunk_pos, mesh));
+                }
+            }
+        }
+
+        if block == BlockId::Air {
+            let above = p + IVec3::Y;
+            if self.block_at(above).requires_floor() {
+                events.extend(self.set_block(above, BlockId::Air));
+            }
+
+            let water_above = self.block_at(p + IVec3::Y) == BlockId::Water;
+            let horizontal_water = (p.y <= crate::terrain::SEA_LEVEL)
+                && [p + IVec3::X, p - IVec3::X, p + IVec3::Z, p - IVec3::Z]
+                    .iter()
+                    .any(|&n| self.block_at(n) == BlockId::Water);
+
+            if water_above || horizontal_water {
+                events.extend(self.set_block(p, BlockId::Water));
+                let mut below = p - IVec3::Y;
+                while below.y >= 0 && self.block_at(below) == BlockId::Air {
+                    events.extend(self.set_block(below, BlockId::Water));
+                    below -= IVec3::Y;
+                }
+            }
+        }
+
+        events
+    }
+
     /// Whether the chunk holding world column (x, z) is loaded. Movement
     /// should wait for it, since unloaded space reads as empty air.
     pub fn is_loaded(&self, x: i32, z: i32) -> bool {
@@ -358,5 +445,78 @@ mod tests {
         assert!(!world.is_underwater(Vec3::new(-0.5, 64.875, -0.5)));
         assert!(!world.is_underwater(Vec3::new(-0.5, 64.99, -0.5)));
         assert!(!world.is_underwater(Vec3::new(0.5, 64.5, 0.5)));
+    }
+
+    #[test]
+    fn set_block_updates_block_and_remeshes_chunk() {
+        let mut world = World::new(1, 1).unwrap();
+        let expected = chunks_within(1);
+        pump(&mut world, Vec3::ZERO, |w| w.stats().1 == expected);
+
+        let target = IVec3::new(0, 300, 0);
+        assert_eq!(world.block_at(target), BlockId::Air);
+
+        let events = world.set_block(target, BlockId::Stone);
+        assert_eq!(world.block_at(target), BlockId::Stone);
+        assert!(!events.is_empty());
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, WorldEvent::Meshed(pos, _) if *pos == IVec2::ZERO)));
+
+        let events = world.set_block(target, BlockId::Air);
+        assert_eq!(world.block_at(target), BlockId::Air);
+        assert!(!events.is_empty());
+    }
+
+    #[test]
+    fn destroying_ground_below_grass_tuft_removes_the_tuft() {
+        let mut world = World::new(1, 1).unwrap();
+        let expected = chunks_within(1);
+        pump(&mut world, Vec3::ZERO, |w| w.stats().1 == expected);
+
+        let ground = IVec3::new(2, 300, 2);
+        let tuft = ground + IVec3::Y;
+        world.set_block(ground, BlockId::Dirt);
+        world.set_block(tuft, BlockId::GrassTuft);
+        assert_eq!(world.block_at(ground), BlockId::Dirt);
+        assert_eq!(world.block_at(tuft), BlockId::GrassTuft);
+
+        world.set_block(ground, BlockId::Air);
+        assert_eq!(world.block_at(ground), BlockId::Air);
+        assert_eq!(world.block_at(tuft), BlockId::Air);
+    }
+
+    #[test]
+    fn breaking_block_adjacent_to_water_causes_water_to_flood() {
+        let mut world = World::new(1, 1).unwrap();
+        let expected = chunks_within(1);
+        pump(&mut world, Vec3::ZERO, |w| w.stats().1 == expected);
+
+        let water_pos = IVec3::new(4, crate::terrain::SEA_LEVEL, 4);
+        let sand_pos = water_pos + IVec3::X;
+        world.set_block(water_pos, BlockId::Water);
+        world.set_block(sand_pos, BlockId::Sand);
+        assert_eq!(world.block_at(water_pos), BlockId::Water);
+        assert_eq!(world.block_at(sand_pos), BlockId::Sand);
+
+        world.set_block(sand_pos, BlockId::Air);
+        assert_eq!(world.block_at(sand_pos), BlockId::Water);
+    }
+
+    #[test]
+    fn breaking_block_under_water_causes_water_to_fall() {
+        let mut world = World::new(1, 1).unwrap();
+        let expected = chunks_within(1);
+        pump(&mut world, Vec3::ZERO, |w| w.stats().1 == expected);
+
+        let stone_pos = IVec3::new(5, 70, 5);
+        let water_pos = stone_pos + IVec3::Y;
+        world.set_block(water_pos, BlockId::Water);
+        world.set_block(stone_pos, BlockId::Stone);
+        assert_eq!(world.block_at(water_pos), BlockId::Water);
+        assert_eq!(world.block_at(stone_pos), BlockId::Stone);
+
+        world.set_block(stone_pos, BlockId::Air);
+        assert_eq!(world.block_at(stone_pos), BlockId::Water);
     }
 }

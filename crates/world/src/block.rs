@@ -235,6 +235,46 @@ impl BlockId {
             _ => Tint::None,
         }
     }
+
+    /// Whether this block requires a solid supporting block underneath to stay intact.
+    pub fn requires_floor(self) -> bool {
+        matches!(self, BlockId::GrassTuft)
+    }
+
+    /// Break time in seconds when mining this block. Returns None for unbreakable blocks.
+    pub fn hardness(self) -> Option<f32> {
+        match self {
+            BlockId::Air | BlockId::Water => None,
+            BlockId::GrassTuft => Some(0.1),
+            BlockId::Leaves => Some(0.25),
+            BlockId::Dirt
+            | BlockId::Grass
+            | BlockId::SnowyGrass
+            | BlockId::Sand
+            | BlockId::Gravel
+            | BlockId::Snow => Some(0.5),
+            BlockId::Log => Some(0.8),
+            BlockId::Stone | BlockId::Sandstone | BlockId::Ice => Some(1.2),
+        }
+    }
+
+    /// Primary representative sRGB color for debris particles when this block breaks.
+    pub fn particle_color(self) -> [u8; 4] {
+        match self {
+            BlockId::Air | BlockId::Water => [0, 0, 0, 0],
+            BlockId::Stone => [125, 125, 125, 255],
+            BlockId::Dirt => [134, 96, 67, 255],
+            BlockId::Grass => [100, 145, 60, 255],
+            BlockId::SnowyGrass | BlockId::Snow => [235, 240, 245, 255],
+            BlockId::Sand => [218, 204, 150, 255],
+            BlockId::Sandstone => [200, 180, 130, 255],
+            BlockId::Gravel => [140, 135, 130, 255],
+            BlockId::Ice => [160, 200, 240, 255],
+            BlockId::Log => [105, 75, 45, 255],
+            BlockId::Leaves => [70, 130, 45, 255],
+            BlockId::GrassTuft => [90, 140, 50, 255],
+        }
+    }
 }
 
 #[cfg(test)]
@@ -293,5 +333,15 @@ mod tests {
         for face in Face::ALL {
             assert_eq!(face.normal().abs().element_sum(), 1);
         }
+    }
+
+    #[test]
+    fn breakable_blocks_have_hardness_and_particle_color() {
+        assert_eq!(BlockId::Air.hardness(), None);
+        assert_eq!(BlockId::Water.hardness(), None);
+        assert!(BlockId::Dirt.hardness().is_some());
+        assert!(BlockId::Stone.hardness().unwrap() > BlockId::Dirt.hardness().unwrap());
+        assert_eq!(BlockId::Air.particle_color(), [0, 0, 0, 0]);
+        assert_ne!(BlockId::Stone.particle_color(), [0, 0, 0, 0]);
     }
 }

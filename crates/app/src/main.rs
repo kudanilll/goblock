@@ -5,6 +5,7 @@
 //! module here and reuse the camera, world and render crates unchanged.
 
 mod assets;
+mod effects;
 mod game;
 mod input;
 mod menu;
@@ -439,6 +440,8 @@ impl ActiveState {
 
         let size = self.window.inner_size();
         let scale = ui::scale_for(size.height as f32);
+        let ui_width = size.width as f32 / scale;
+        let ui_height = size.height as f32 / scale;
         let fps = self.fps.fps();
         let mut ui_vertices = if mode == AppMode::Playing {
             let chunk_count = self.renderer.chunk_count();
@@ -447,14 +450,14 @@ impl ActiveState {
                 .as_ref()
                 .map(|g| g.hud_lines(chunk_count, fps))
                 .unwrap_or_default();
-            goblock_render::build_hud_vertices(&lines)
+            let mut verts = goblock_render::build_hud_vertices(&lines);
+            goblock_render::push_crosshair(&mut verts, ui_width * 0.5, ui_height * 0.5);
+            if let Some(game) = self.game.as_ref() {
+                game.render_effects(&mut verts, ui_width, ui_height);
+            }
+            verts
         } else {
-            self.screens.vertices(
-                fps,
-                time,
-                size.width as f32 / scale,
-                size.height as f32 / scale,
-            )
+            self.screens.vertices(fps, time, ui_width, ui_height)
         };
         ui::scale_vertices(&mut ui_vertices, scale);
 

@@ -14,6 +14,6 @@ pub use block_textures::BlockTextures;
 pub use font::FontKind;
 pub use vk::error::VkError;
 pub use vk::renderer::{
-    build_hud_vertices, draw_text, measure_text, push_glyph, push_rect, FrameView, HudVertex,
-    Renderer,
+    build_hud_vertices, draw_text, measure_text, push_crosshair, push_glyph, push_line, push_rect,
+    FrameView, HudVertex, Renderer,
 };

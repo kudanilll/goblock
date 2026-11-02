@@ -1094,6 +1094,31 @@ pub fn build_hud_vertices(lines: &[String]) -> Vec<HudVertex> {
     out
 }
 
+/// Append a crosshair at the centre of the screen to `out`.
+pub fn push_crosshair(out: &mut Vec<HudVertex>, center_x: f32, center_y: f32) {
+    let arm_length = 6.0;
+    let thickness = 2.0;
+    let half_thick = thickness * 0.5;
+    let white = [255, 255, 255, 220];
+
+    push_rect(
+        out,
+        center_x - arm_length,
+        center_y - half_thick,
+        arm_length * 2.0,
+        thickness,
+        white,
+    );
+    push_rect(
+        out,
+        center_x - half_thick,
+        center_y - arm_length,
+        thickness,
+        arm_length * 2.0,
+        white,
+    );
+}
+
 pub fn push_glyph(
     out: &mut Vec<HudVertex>,
     kind: font::FontKind,
@@ -1166,6 +1191,41 @@ pub fn push_rect(out: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f32, color
         (x, y),
         (x + w, y + h),
         (x + w, y),
+    ];
+    for (px, py) in quad {
+        out.push(HudVertex {
+            pos: [px, py],
+            uv: [u, v],
+            color,
+        });
+    }
+}
+
+/// Append a line quad from `a` to `b` with the given thickness and color.
+pub fn push_line(
+    out: &mut Vec<HudVertex>,
+    a: [f32; 2],
+    b: [f32; 2],
+    thickness: f32,
+    color: [u8; 4],
+) {
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 0.5 {
+        return;
+    }
+    let nx = -dy / len * (thickness * 0.5);
+    let ny = dx / len * (thickness * 0.5);
+
+    let [u, v] = font::white_pixel_uv();
+    let quad = [
+        (a[0] + nx, a[1] + ny),
+        (a[0] - nx, a[1] - ny),
+        (b[0] - nx, b[1] - ny),
+        (a[0] + nx, a[1] + ny),
+        (b[0] - nx, b[1] - ny),
+        (b[0] + nx, b[1] + ny),
     ];
     for (px, py) in quad {
         out.push(HudVertex {
@@ -1280,5 +1340,13 @@ mod tests {
         let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/background.frag.spv"));
         assert!(!bytes.is_empty());
         assert_eq!(bytes.len() % 4, 0);
+    }
+
+    #[test]
+    fn crosshair_emits_expected_quad_vertices() {
+        let mut out = Vec::new();
+        push_crosshair(&mut out, 100.0, 100.0);
+        // 2 quads = 12 vertices (6 per quad)
+        assert_eq!(out.len(), 12);
     }
 }

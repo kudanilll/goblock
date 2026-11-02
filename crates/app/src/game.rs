@@ -2,10 +2,13 @@
 
 use std::time::Instant;
 
-use glam::DVec3;
+use glam::{DVec3, IVec3};
 
 use goblock_input::{Camera, InputState, Player};
-use goblock_world::{World, WorldEvent, CHUNK_SIZE};
+use goblock_render::HudVertex;
+use goblock_world::{BlockId, World, WorldEvent, CHUNK_SIZE};
+
+use crate::effects::{EffectsSystem, MiningTarget};
 
 /// Chunks kept meshed around the player.
 pub const VIEW_DISTANCE: i32 = 16;
@@ -15,10 +18,14 @@ pub struct Game {
     pub camera: Camera,
     pub player: Player,
     pub world: World,
+    pub effects: EffectsSystem,
     screen_width: f32,
     screen_height: f32,
     start: Instant,
     pub spawn_settled: bool,
+    break_target: Option<IVec3>,
+    break_progress: f32,
+    pending_events: Vec<WorldEvent>,
 }
 
 impl Game {
@@ -41,10 +48,14 @@ impl Game {
             camera,
             player,
             world,
+            effects: EffectsSystem::new(),
             screen_width: 800.0,
             screen_height: 600.0,
             start: Instant::now(),
             spawn_settled: false,
+            break_target: None,
+            break_progress: 0.0,
+            pending_events: Vec::new(),
         })
     }
 
@@ -115,11 +126,95 @@ impl Game {
             );
         }
         self.camera.position = self.player.eye();
+
+        const REACH_DISTANCE: f32 = 5.0;
+        let hit = goblock_world::raycast(
+            self.camera.position,
+            self.camera.front,
+            REACH_DISTANCE,
+            |cell| self.world.block_at(cell),
+        );
+
+        if let Some(hit) = hit {
+            if input.dig {
+                if let Some(hardness) = hit.block.hardness() {
+                    if self.break_target == Some(hit.block_pos) {
+                        if self.player.flying {
+                            self.break_progress = 1.0;
+                        } else {
+                            self.break_progress += delta_time / hardness;
+                        }
+                    } else {
+                        self.break_target = Some(hit.block_pos);
+                        self.break_progress = if self.player.flying {
+                            1.0
+                        } else {
+                            delta_time / hardness
+                        };
+                    }
+                    self.effects.target = Some(MiningTarget {
+                        pos: hit.block_pos,
+                        face: hit.face,
+                        block: hit.block,
+                        progress: self.break_progress,
+                    });
+                } else {
+                    self.break_target = None;
+                    self.break_progress = 0.0;
+                    self.effects.target = None;
+                }
+            } else {
+                self.break_target = None;
+                self.break_progress = 0.0;
+                self.effects.target = Some(MiningTarget {
+                    pos: hit.block_pos,
+                    face: hit.face,
+                    block: hit.block,
+                    progress: 0.0,
+                });
+            }
+        } else {
+            self.break_target = None;
+            self.break_progress = 0.0;
+            self.effects.target = None;
+        }
+
+        if self.break_progress >= 1.0 {
+            if let Some(target_pos) = self.break_target {
+                let broken_block = self.world.block_at(target_pos);
+                let above_pos = target_pos + IVec3::Y;
+                let above_block = self.world.block_at(above_pos);
+
+                let events = self.world.set_block(target_pos, BlockId::Air);
+                self.pending_events.extend(events);
+                self.effects.spawn_break_burst(target_pos, broken_block);
+
+                if above_block.requires_floor() {
+                    self.effects.spawn_break_burst(above_pos, above_block);
+                }
+
+                self.break_target = None;
+                self.break_progress = 0.0;
+                self.effects.target = None;
+            }
+        }
+
+        let world = &self.world;
+        self.effects.update(delta_time, |p| world.is_solid(p));
     }
 
-    /// Load and unload chunks around the camera.
+    /// Load and unload chunks around the camera, and yield any block change events.
     pub fn stream(&mut self) -> Vec<WorldEvent> {
-        self.world.update(self.camera.position)
+        let mut events = std::mem::take(&mut self.pending_events);
+        events.extend(self.world.update(self.camera.position));
+        events
+    }
+
+    /// Render 3D in-world crack overlay and flying debris particles to `out`.
+    pub fn render_effects(&self, out: &mut Vec<HudVertex>, screen_w: f32, screen_h: f32) {
+        let view_proj = self.camera.projection_matrix(self.aspect()) * self.camera.view_matrix();
+        self.effects
+            .render(out, self.camera.position, view_proj, screen_w, screen_h);
     }
 
     pub fn hud_lines(&self, gpu_chunks: usize, fps: f32) -> Vec<String> {
@@ -206,5 +301,63 @@ mod tests {
         let mut game = Game::new(3).unwrap();
         game.set_screen_size(winit::dpi::PhysicalSize::new(0, 0));
         assert_eq!(game.aspect(), 1.0);
+    }
+
+    #[test]
+    fn digging_breaks_targeted_block_and_spawns_particles() {
+        let mut game = Game::new(3).unwrap();
+        for _ in 0..60 {
+            game.stream();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        // Run one update to settle the player
+        game.update(0.1, &InputState::default());
+
+        game.camera.set_orientation(90.0, 0.0);
+        let target = game.camera.position.floor().as_ivec3() + IVec3::new(0, 0, 2);
+        let _ = game.world.set_block(target, BlockId::Dirt);
+        assert_eq!(game.world.block_at(target), BlockId::Dirt);
+
+        let dig_input = InputState {
+            dig: true,
+            ..Default::default()
+        };
+
+        game.player.flying = true;
+        game.update(0.1, &dig_input);
+
+        assert_eq!(game.world.block_at(target), BlockId::Air);
+        assert!(!game.effects.particles.is_empty());
+    }
+
+    #[test]
+    fn breaking_ground_destroys_grass_tuft_above() {
+        let mut game = Game::new(3).unwrap();
+        for _ in 0..60 {
+            game.stream();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        game.update(0.1, &InputState::default());
+
+        game.camera.set_orientation(90.0, 0.0);
+        let target = game.camera.position.floor().as_ivec3() + IVec3::new(0, 0, 2);
+        let above = target + IVec3::Y;
+        let _ = game.world.set_block(target, BlockId::Dirt);
+        let _ = game.world.set_block(above, BlockId::GrassTuft);
+        assert_eq!(game.world.block_at(target), BlockId::Dirt);
+        assert_eq!(game.world.block_at(above), BlockId::GrassTuft);
+
+        let dig_input = InputState {
+            dig: true,
+            ..Default::default()
+        };
+
+        game.player.flying = true;
+        game.update(0.1, &dig_input);
+
+        assert_eq!(game.world.block_at(target), BlockId::Air);
+        assert_eq!(game.world.block_at(above), BlockId::Air);
     }
 }
