@@ -92,7 +92,6 @@ The build script in `crates/render/build.rs` compiles each shader to SPIR-V at b
 - Menu background slides live in `assets/backgrounds/`.
 - Fonts live in `assets/fonts/`.
 - Any imported third-party code, asset, or font must be credited in `THIRD-PARTY-NOTICES.md` with its license text placed in `licenses/`.
-- Never copy code or assets from the untracked `reference/` or `build/` directories.
 
 ## Pull requests
 
