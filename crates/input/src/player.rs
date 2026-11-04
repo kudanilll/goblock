@@ -41,6 +41,7 @@ pub struct Player {
     pub velocity: Vec3,
     pub on_ground: bool,
     pub flying: bool,
+    pub autojump: bool,
     jump_held: bool,
     /// Seconds since jump was last pressed.
     since_jump: f32,
@@ -53,6 +54,7 @@ impl Player {
             velocity: Vec3::ZERO,
             on_ground: false,
             flying: false,
+            autojump: true,
             jump_held: false,
             since_jump: f32::INFINITY,
         }
@@ -124,9 +126,22 @@ impl Player {
         if hit_floor_or_ceiling {
             self.velocity.y = 0.0;
         }
+        let mut autojump_triggered = false;
         for axis in [0, 2] {
             if self.move_axis(axis, step[axis], &solid) {
-                self.velocity[axis] = 0.0;
+                if !autojump_triggered
+                    && self.autojump
+                    && self.on_ground
+                    && !self.flying
+                    && wish != Vec3::ZERO
+                    && self.can_autojump(axis, step[axis], &solid)
+                {
+                    self.velocity.y = JUMP_SPEED;
+                    self.on_ground = false;
+                    autojump_triggered = true;
+                } else {
+                    self.velocity[axis] = 0.0;
+                }
             }
         }
 
@@ -134,6 +149,70 @@ impl Player {
         if self.flying && self.on_ground {
             self.flying = false;
         }
+    }
+
+    /// Whether moving along `axis` hit a 1-block ledge that can be jumped over.
+    fn can_autojump(&self, axis: usize, amount: f64, solid: &impl Fn(IVec3) -> bool) -> bool {
+        if amount == 0.0 {
+            return false;
+        }
+        let (min, max) = self.bounds();
+
+        // 1. Check that above the player's head is clear (no low ceiling).
+        let head_top = (max.y - SKIN).floor() as i32 + 1;
+        let jump_head = (max.y + 1.25).floor() as i32;
+        let span_x = (min.x + SKIN).floor() as i32..=(max.x - SKIN).floor() as i32;
+        let span_z = (min.z + SKIN).floor() as i32..=(max.z - SKIN).floor() as i32;
+        for y in head_top..=jump_head {
+            for x in span_x.clone() {
+                for z in span_z.clone() {
+                    if solid(IVec3::new(x, y, z)) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // 2. Identify the obstacle column in the direction of movement.
+        let step_layer = if amount > 0.0 {
+            (max[axis] - SKIN).floor() as i32 + 1
+        } else {
+            (min[axis] + SKIN).floor() as i32 - 1
+        };
+
+        let other_axis = if axis == 0 { 2 } else { 0 };
+        let other_span =
+            (min[other_axis] + SKIN).floor() as i32..=(max[other_axis] - SKIN).floor() as i32;
+        let feet_y = (min.y + SKIN).floor() as i32;
+
+        // The obstacle must be solid at feet level.
+        let obstacle_solid = other_span.clone().any(|other| {
+            let mut cell = IVec3::ZERO;
+            cell[axis] = step_layer;
+            cell[other_axis] = other;
+            cell.y = feet_y;
+            solid(cell)
+        });
+        if !obstacle_solid {
+            return false;
+        }
+
+        // Above the obstacle (+1 block and +2 blocks for body height) must be air.
+        let step_body_bottom = feet_y + 1;
+        let step_body_top = (min.y + 1.0 + HEIGHT - SKIN).floor() as i32;
+        for y in step_body_bottom..=step_body_top {
+            for other in other_span.clone() {
+                let mut cell = IVec3::ZERO;
+                cell[axis] = step_layer;
+                cell[other_axis] = other;
+                cell.y = y;
+                if solid(cell) {
+                    return false;
+                }
+            }
+        }
+
+        true
     }
 
     /// Lowest and highest corners of the body.
@@ -350,6 +429,65 @@ mod tests {
         run(&mut player, &idle, 60, ground);
         run(&mut player, &jump(), 2, ground);
         assert!(!player.flying);
+    }
+
+    #[test]
+    fn autojump_steps_over_one_block_ledge() {
+        let one_block_step = |c: IVec3| c.y < 0 || (c.y == 0 && c.z <= 0);
+        let mut player = Player::new(DVec3::new(0.5, 0.0, 1.5));
+        player.on_ground = true;
+        player.autojump = true;
+
+        let forward = walk(0.0, 1.0);
+        run(&mut player, &forward, 60, one_block_step);
+
+        assert!(
+            player.feet.y >= 1.0,
+            "player should autojump onto ledge at y=1.0, feet.y is {}",
+            player.feet.y
+        );
+        assert!(
+            player.feet.z < 0.5,
+            "player should move forward past the ledge edge"
+        );
+        assert!(player.on_ground, "player should land on top of the ledge");
+    }
+
+    #[test]
+    fn autojump_disabled_stops_at_one_block_ledge() {
+        let one_block_step = |c: IVec3| c.y < 0 || (c.y == 0 && c.z <= 0);
+        let mut player = Player::new(DVec3::new(0.5, 0.0, 1.5));
+        player.on_ground = true;
+        player.autojump = false;
+
+        let forward = walk(0.0, 1.0);
+        run(&mut player, &forward, 60, one_block_step);
+
+        assert_eq!(
+            player.feet.y, 0.0,
+            "player without autojump should stay at y=0.0"
+        );
+        assert!(player.feet.z > 0.0, "player should be stopped by the wall");
+    }
+
+    #[test]
+    fn autojump_does_not_trigger_on_two_block_wall() {
+        let two_block_wall = |c: IVec3| c.y < 0 || ((c.y == 0 || c.y == 1) && c.z <= 0);
+        let mut player = Player::new(DVec3::new(0.5, 0.0, 1.5));
+        player.on_ground = true;
+        player.autojump = true;
+
+        let forward = walk(0.0, 1.0);
+        run(&mut player, &forward, 60, two_block_wall);
+
+        assert_eq!(
+            player.feet.y, 0.0,
+            "two block wall should not trigger autojump"
+        );
+        assert!(
+            player.feet.z > 0.0,
+            "player should remain blocked by the wall"
+        );
     }
 
     #[test]

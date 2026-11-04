@@ -234,12 +234,16 @@ impl ActiveState {
         };
 
         let now = std::time::Instant::now();
+        let screens = Screens::new(saved_worlds);
+        if screens.settings.fullscreen {
+            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+        }
         Ok(Self {
             renderer,
             window,
             game: None,
             input,
-            screens: Screens::new(saved_worlds),
+            screens,
             current_world: None,
             mouse_pos: (0.0, 0.0),
             start: now,
@@ -262,12 +266,16 @@ impl ActiveState {
         )
     }
 
-    fn toggle_fullscreen(&self) {
+    fn toggle_fullscreen(&mut self) {
         let fullscreen = match self.window.fullscreen() {
             Some(_) => None,
             None => Some(Fullscreen::Borderless(None)),
         };
         self.window.set_fullscreen(fullscreen);
+        self.screens.settings.fullscreen = self.window.fullscreen().is_some();
+        if let Err(e) = self.screens.settings.save() {
+            eprintln!("goblock: save settings error: {e}");
+        }
     }
 
     /// Carries out what a screen asked for. [`Screens::apply`] has already
@@ -305,6 +313,7 @@ impl ActiveState {
                 game.set_screen_size(size);
                 game.set_view_distance(self.screens.settings.view_distance);
                 game.camera.set_base_fov(self.screens.settings.fov);
+                game.player.autojump = self.screens.settings.autojump;
                 if meta.player_pos != [0.0, 0.0, 0.0] {
                     game.player.feet = glam::DVec3::from_array(meta.player_pos);
                     game.camera.position = game.player.eye();
@@ -387,6 +396,7 @@ impl ActiveState {
                 if game.view_distance() != settings.view_distance {
                     game.set_view_distance(settings.view_distance);
                 }
+                game.player.autojump = settings.autojump;
                 let mut input = self.input.poll();
                 input.look_delta.x *= settings.sensitivity / 2.5;
                 input.look_delta.y *=
@@ -404,6 +414,16 @@ impl ActiveState {
             if saves::autosave_due(self.last_save, now) {
                 self.save_current_world();
             }
+        }
+
+        let is_fullscreen = self.window.fullscreen().is_some();
+        if self.screens.settings.fullscreen != is_fullscreen {
+            let target = if self.screens.settings.fullscreen {
+                Some(winit::window::Fullscreen::Borderless(None))
+            } else {
+                None
+            };
+            self.window.set_fullscreen(target);
         }
 
         let mode = self.screens.mode;

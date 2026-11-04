@@ -37,6 +37,7 @@ pub struct Settings {
     // Video
     pub fov: f32,
     pub view_distance: i32,
+    pub fullscreen: bool,
     pub reflections: bool,
     pub shadows: bool,
     pub ambient_occlusion: bool,
@@ -44,6 +45,7 @@ pub struct Settings {
     // Controls
     pub sensitivity: f32,
     pub invert_y: bool,
+    pub autojump: bool,
 
     // Audio
     pub master_volume: f32,
@@ -92,11 +94,13 @@ impl Default for Settings {
         Self {
             fov: 70.0,
             view_distance: 16,
+            fullscreen: false,
             reflections: true,
             shadows: true,
             ambient_occlusion: true,
             sensitivity: 2.5,
             invert_y: false,
+            autojump: true,
             master_volume: 1.0,
             music_volume: 0.8,
             sfx_volume: 1.0,
@@ -237,6 +241,13 @@ impl SettingsMenu {
                     },
                 },
                 SettingDef {
+                    id: "fullscreen",
+                    category: "DISPLAY",
+                    label: "Fullscreen",
+                    description: "Borderless fullscreen window covering the entire display.",
+                    kind: SettingKind::Toggle,
+                },
+                SettingDef {
                     id: "reflections",
                     category: "GRAPHICS",
                     label: "Water Reflections",
@@ -275,6 +286,13 @@ impl SettingsMenu {
                     category: "MOUSE SETTINGS",
                     label: "Invert Vertical Look",
                     description: "Inverts up/down pitch axis for flight or inverted preferences.",
+                    kind: SettingKind::Toggle,
+                },
+                SettingDef {
+                    id: "autojump",
+                    category: "MOVEMENT",
+                    label: "Auto-Jump",
+                    description: "Automatically step up 1-block obstacles while walking forward.",
                     kind: SettingKind::Toggle,
                 },
                 SettingDef {
@@ -401,10 +419,12 @@ impl SettingsMenu {
                 _ => {}
             },
             SettingKind::Toggle => match item.id {
+                "fullscreen" => settings.fullscreen = !settings.fullscreen,
                 "reflections" => settings.reflections = !settings.reflections,
                 "shadows" => settings.shadows = !settings.shadows,
                 "ambient_occlusion" => settings.ambient_occlusion = !settings.ambient_occlusion,
                 "invert_y" => settings.invert_y = !settings.invert_y,
+                "autojump" => settings.autojump = !settings.autojump,
                 _ => {}
             },
             SettingKind::Keybind { .. } => {}
@@ -877,10 +897,12 @@ fn set_slider(settings: &mut Settings, id: &str, value: f32) {
 
 fn toggle_value(settings: &Settings, id: &str) -> bool {
     match id {
+        "fullscreen" => settings.fullscreen,
         "reflections" => settings.reflections,
         "shadows" => settings.shadows,
         "ambient_occlusion" => settings.ambient_occlusion,
         "invert_y" => settings.invert_y,
+        "autojump" => settings.autojump,
         _ => false,
     }
 }
@@ -1150,7 +1172,12 @@ mod tests {
     fn clicking_a_toggle_row_flips_it() {
         let mut menu = SettingsMenu::new();
         let mut settings = Settings::default();
-        click_center(&mut menu, &mut settings, SettingsItem::Row(2));
+        let index = menu
+            .items_for_tab(Tab::Video)
+            .iter()
+            .position(|i| i.id == "reflections")
+            .unwrap();
+        click_center(&mut menu, &mut settings, SettingsItem::Row(index));
         assert!(!settings.reflections);
     }
 
@@ -1158,7 +1185,12 @@ mod tests {
     fn clicking_ambient_occlusion_toggle_flips_it() {
         let mut menu = SettingsMenu::new();
         let mut settings = Settings::default();
-        click_center(&mut menu, &mut settings, SettingsItem::Row(4));
+        let index = menu
+            .items_for_tab(Tab::Video)
+            .iter()
+            .position(|i| i.id == "ambient_occlusion")
+            .unwrap();
+        click_center(&mut menu, &mut settings, SettingsItem::Row(index));
         assert!(!settings.ambient_occlusion);
     }
 
@@ -1172,7 +1204,7 @@ mod tests {
         assert_eq!(menu.selected_row, 1);
         menu.handle_key_down(&mut settings, true, KeyCode::ArrowUp);
         menu.handle_key_down(&mut settings, true, KeyCode::ArrowUp);
-        assert_eq!(menu.selected_row, 4);
+        assert_eq!(menu.selected_row, menu.items_for_tab(Tab::Video).len() - 1);
 
         menu.handle_key_down(&mut settings, true, KeyCode::KeyE);
         assert_eq!((menu.active_tab, menu.selected_row), (Tab::Controls, 0));
@@ -1236,5 +1268,38 @@ mod tests {
         let loaded = Settings::load_from(&temp_corrupt);
         let _ = std::fs::remove_file(&temp_corrupt);
         assert_eq!(loaded, Settings::default());
+    }
+
+    #[test]
+    fn test_autojump_and_fullscreen_settings() {
+        let mut settings = Settings::default();
+        assert!(settings.autojump, "autojump must be enabled by default");
+        assert!(
+            !settings.fullscreen,
+            "fullscreen should be disabled by default"
+        );
+
+        let mut menu = SettingsMenu::new();
+        menu.active_tab = Tab::Video;
+        let video_items = menu.items_for_tab(Tab::Video);
+        let fs_index = video_items
+            .iter()
+            .position(|i| i.id == "fullscreen")
+            .expect("fullscreen setting exists in video tab");
+        menu.adjust_item(&mut settings, fs_index, 1.0);
+        assert!(settings.fullscreen);
+        menu.adjust_item(&mut settings, fs_index, 1.0);
+        assert!(!settings.fullscreen);
+
+        menu.active_tab = Tab::Controls;
+        let ctrl_items = menu.items_for_tab(Tab::Controls);
+        let aj_index = ctrl_items
+            .iter()
+            .position(|i| i.id == "autojump")
+            .expect("autojump setting exists in controls tab");
+        menu.adjust_item(&mut settings, aj_index, 1.0);
+        assert!(!settings.autojump);
+        menu.adjust_item(&mut settings, aj_index, 1.0);
+        assert!(settings.autojump);
     }
 }
