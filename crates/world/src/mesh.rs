@@ -166,6 +166,7 @@ fn emit_grass(chunk: &Chunk, pos: IVec3, out: &mut Vec<ChunkVertex>) {
             .into_iter()
             .enumerate()
         {
+            let shade = if y == 0 { AO_LEVELS[1] } else { 255 };
             out.push(ChunkVertex {
                 position: [
                     (pos.x * 16 + x + jitter_x) as u16,
@@ -173,7 +174,7 @@ fn emit_grass(chunk: &Chunk, pos: IVec3, out: &mut Vec<ChunkVertex>) {
                     (pos.z * 16 + z + jitter_z) as u16,
                     6 + plane as u16,
                 ],
-                uv_layer_shade: [UVS[i][0] ^ mirror, UVS[i][1], sprite as u8, 255],
+                uv_layer_shade: [UVS[i][0] ^ mirror, UVS[i][1], sprite as u8, shade],
                 tint: [r, g, b, if y == 0 { 0 } else { 255 }],
             });
         }
@@ -492,6 +493,23 @@ mod tests {
         let mesh = mesh_alone(&chunk);
         assert_eq!(mesh.opaque_quads, 6);
         assert_eq!(mesh.cutout_quads, 2);
+    }
+
+    #[test]
+    fn grass_tufts_darken_at_ground_contact() {
+        let mut chunk = Chunk::new(IVec2::ZERO);
+        chunk.set(5, 70, 5, BlockId::GrassTuft);
+        let mesh = mesh_alone(&chunk);
+        assert_eq!(mesh.vertices.len(), 8);
+        for vertex in &mesh.vertices {
+            if vertex.tint[3] == 0 {
+                // Ground vertices receive contact occlusion.
+                assert_eq!(vertex.uv_layer_shade[3], AO_LEVELS[1]);
+            } else {
+                // Top vertices are open to sky.
+                assert_eq!(vertex.uv_layer_shade[3], 255);
+            }
+        }
     }
 
     #[test]

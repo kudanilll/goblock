@@ -434,6 +434,7 @@ impl ActiveState {
             fog_end,
             time: elapsed,
             underwater,
+            ambient_occlusion: self.screens.settings.ambient_occlusion,
             blur_background: is_in_game_settings,
             menu_background,
         };

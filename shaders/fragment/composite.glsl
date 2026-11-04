@@ -19,11 +19,20 @@ void main() {
 
     if (frame.fog.z > 0.5) {
         vec2 distortedUv = sceneUv(screenUv + underwaterRipple(screenUv) * sceneContinuity(screenUv));
-        vec3 baseColor = textureLod(uSceneColor, distortedUv, 0.0).rgb;
+        float ao = 1.0;
+        if (frame.uiState.y > 0.5) {
+            ao = evaluateSSAO(distortedUv, gl_FragCoord.xy);
+        }
+        vec3 baseColor = textureLod(uSceneColor, distortedUv, 0.0).rgb * ao;
         vec3 point = scenePosition(distortedUv, sceneDepth(distortedUv));
         float distance = length(point);
         outColor = vec4(underwaterColor(baseColor, point / max(distance, 1e-4), distance, 0.5), 1.0);
     } else {
-        outColor = vec4(texelFetch(uSceneColor, ivec2(gl_FragCoord.xy), 0).rgb, 1.0);
+        float ao = 1.0;
+        if (frame.uiState.y > 0.5) {
+            ao = evaluateSSAO(screenUv, gl_FragCoord.xy);
+        }
+        vec3 baseColor = texelFetch(uSceneColor, ivec2(gl_FragCoord.xy), 0).rgb * ao;
+        outColor = vec4(baseColor, 1.0);
     }
 }

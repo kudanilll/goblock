@@ -30,6 +30,7 @@ pub struct Settings {
     pub view_distance: i32,
     pub reflections: bool,
     pub shadows: bool,
+    pub ambient_occlusion: bool,
 
     // Controls
     pub sensitivity: f32,
@@ -48,6 +49,7 @@ impl Default for Settings {
             view_distance: 16,
             reflections: true,
             shadows: true,
+            ambient_occlusion: true,
             sensitivity: 2.5,
             invert_y: false,
             master_volume: 1.0,
@@ -203,6 +205,13 @@ impl SettingsMenu {
                     description: "Direct sunlight shadow map for terrain, trees, and grass.",
                     kind: SettingKind::Toggle,
                 },
+                SettingDef {
+                    id: "ambient_occlusion",
+                    category: "GRAPHICS",
+                    label: "Ambient Occlusion",
+                    description: "Screen-space contact shadows and crevice darkening.",
+                    kind: SettingKind::Toggle,
+                },
             ],
             Tab::Controls => &[
                 SettingDef {
@@ -349,6 +358,7 @@ impl SettingsMenu {
             SettingKind::Toggle => match item.id {
                 "reflections" => settings.reflections = !settings.reflections,
                 "shadows" => settings.shadows = !settings.shadows,
+                "ambient_occlusion" => settings.ambient_occlusion = !settings.ambient_occlusion,
                 "invert_y" => settings.invert_y = !settings.invert_y,
                 _ => {}
             },
@@ -824,6 +834,7 @@ fn toggle_value(settings: &Settings, id: &str) -> bool {
     match id {
         "reflections" => settings.reflections,
         "shadows" => settings.shadows,
+        "ambient_occlusion" => settings.ambient_occlusion,
         "invert_y" => settings.invert_y,
         _ => false,
     }
@@ -944,6 +955,8 @@ mod tests {
         assert_eq!(s.fov, 70.0);
         assert_eq!(s.view_distance, 16);
         assert!(s.reflections);
+        assert!(s.shadows);
+        assert!(s.ambient_occlusion);
         assert_eq!(s.sensitivity, 2.5);
         assert!(!s.invert_y);
         assert_eq!(s.master_volume, 1.0);
@@ -1097,6 +1110,14 @@ mod tests {
     }
 
     #[test]
+    fn clicking_ambient_occlusion_toggle_flips_it() {
+        let mut menu = SettingsMenu::new();
+        let mut settings = Settings::default();
+        click_center(&mut menu, &mut settings, SettingsItem::Row(4));
+        assert!(!settings.ambient_occlusion);
+    }
+
+    #[test]
     fn keys_step_tabs_and_rows() {
         use winit::keyboard::KeyCode;
         let mut menu = SettingsMenu::new();
@@ -1106,7 +1127,7 @@ mod tests {
         assert_eq!(menu.selected_row, 1);
         menu.handle_key_down(&mut settings, true, KeyCode::ArrowUp);
         menu.handle_key_down(&mut settings, true, KeyCode::ArrowUp);
-        assert_eq!(menu.selected_row, 3);
+        assert_eq!(menu.selected_row, 4);
 
         menu.handle_key_down(&mut settings, true, KeyCode::KeyE);
         assert_eq!((menu.active_tab, menu.selected_row), (Tab::Controls, 0));

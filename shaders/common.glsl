@@ -21,6 +21,7 @@ layout(set = 0, binding = 0) uniform Frame {
     // xyz: player's feet relative to the camera. w: body height.
     vec4 playerFeet;
     // x: 1.0 when settings menu is open to blur the background game scene.
+    // y: 1.0 when ambient occlusion is enabled.
     vec4 uiState;
 } frame;
 

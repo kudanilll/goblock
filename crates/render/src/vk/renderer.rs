@@ -58,6 +58,8 @@ pub struct FrameView {
     /// Whether the camera is in water, which swaps the sky and the fog for
     /// murky water.
     pub underwater: bool,
+    /// Whether screen-space ambient occlusion should be applied to the scene.
+    pub ambient_occlusion: bool,
     /// Whether the settings menu is open, blurring and dimming the game scene.
     pub blur_background: bool,
     /// When Some((layer_a, layer_b, blend)), renders the static background slideshow instead of 3D scene.
@@ -1010,7 +1012,12 @@ fn frame_uniforms(
             flag(reflections),
         ],
         &[feet.x, feet.y, feet.z, view.player_height],
-        &[flag(view.blur_background), 0.0, 0.0, 0.0],
+        &[
+            flag(view.blur_background),
+            flag(view.ambient_occlusion),
+            0.0,
+            0.0,
+        ],
     ]
     .concat();
     bytemuck::cast_slice(&floats).to_vec()
@@ -1250,6 +1257,7 @@ mod tests {
             fog_end: 100.0,
             time: 7.0,
             underwater: true,
+            ambient_occlusion: true,
             blur_background: false,
             menu_background: None,
         };
@@ -1273,6 +1281,7 @@ mod tests {
             [0.0, -1.5, 0.0, 1.8]
         );
         assert_eq!(float(256), 0.0, "blur_background flag in uiState.x");
+        assert_eq!(float(260), 1.0, "ambient_occlusion flag in uiState.y");
     }
 
     #[test]
@@ -1285,6 +1294,7 @@ mod tests {
             fog_end: 100.0,
             time: 7.0,
             underwater: false,
+            ambient_occlusion: false,
             blur_background: true,
             menu_background: None,
         };
@@ -1293,6 +1303,7 @@ mod tests {
         let float =
             |offset: usize| f32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap());
         assert_eq!(float(256), 1.0, "blur_background flag in uiState.x");
+        assert_eq!(float(260), 0.0, "ambient_occlusion flag in uiState.y");
     }
 
     #[test]
@@ -1305,6 +1316,12 @@ mod tests {
     fn composite_shader_includes_common_definitions() {
         let src = include_str!("../../../../shaders/fragment/composite.glsl");
         assert!(src.contains("#include \"common.glsl\""));
+    }
+
+    #[test]
+    fn scene_shader_declares_ssao_helper() {
+        let src = include_str!("../../../../shaders/scene.glsl");
+        assert!(src.contains("float evaluateSSAO(vec2 uv, vec2 screenPos)"));
     }
 
     #[test]
