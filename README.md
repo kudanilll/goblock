@@ -26,6 +26,12 @@ On Debian and Ubuntu:
 sudo apt install vulkan-tools libvulkan-dev glslc
 ```
 
+On Fedora:
+
+```sh
+sudo dnf install vulkan-tools vulkan-loader-devel glslc
+```
+
 The build script looks for `glslc` under `VULKAN_SDK`, then in the usual Windows install folders, then on `PATH`. Set `VULKAN_SDK` if your SDK lives somewhere unusual.
 
 ## Running
