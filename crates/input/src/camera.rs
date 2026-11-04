@@ -5,7 +5,9 @@ use glam::{Mat4, Vec3};
 
 /// Vertical field of view in degrees, at rest and while sprinting.
 const FOV: f32 = 45.0;
-const SPRINT_FOV: f32 = 52.0;
+const SPRINT_BOOST: f32 = 7.0;
+#[cfg(test)]
+const SPRINT_FOV: f32 = FOV + SPRINT_BOOST;
 /// How fast the field of view follows a change, per second.
 const FOV_EASE: f32 = 8.0;
 
@@ -18,6 +20,7 @@ pub struct Camera {
     yaw: f32,
     pitch: f32,
     mouselook_sensitivity: f32,
+    base_fov: f32,
     fov_degrees: f32,
 }
 
@@ -31,6 +34,7 @@ impl Default for Camera {
             yaw: -135.0,
             pitch: -20.0,
             mouselook_sensitivity: 0.3,
+            base_fov: FOV,
             fov_degrees: FOV,
         };
         camera.update_vectors();
@@ -41,6 +45,14 @@ impl Default for Camera {
 impl Camera {
     pub fn fov_degrees(&self) -> f32 {
         self.fov_degrees
+    }
+
+    pub fn base_fov(&self) -> f32 {
+        self.base_fov
+    }
+
+    pub fn set_base_fov(&mut self, fov_degrees: f32) {
+        self.base_fov = fov_degrees;
     }
 
     pub fn yaw(&self) -> f32 {
@@ -61,7 +73,11 @@ impl Camera {
     /// easing over a fraction of a second so the change reads as speed
     /// rather than a jump cut.
     pub fn ease_fov(&mut self, sprinting: bool, dt: f32) {
-        let target = if sprinting { SPRINT_FOV } else { FOV };
+        let target = if sprinting {
+            self.base_fov + SPRINT_BOOST
+        } else {
+            self.base_fov
+        };
         self.fov_degrees += (target - self.fov_degrees) * (1.0 - (-FOV_EASE * dt).exp());
     }
 
@@ -214,5 +230,20 @@ mod tests {
         // m[0] is 1 / (aspect * tan(fov/2)); a wider aspect shrinks it.
         let narrow: [f32; 16] = c.projection_matrix(4.0 / 3.0).to_cols_array();
         assert!(m[0] < narrow[0]);
+    }
+
+    #[test]
+    fn setting_base_fov_adjusts_projection_and_sprint_target() {
+        let mut c = Camera::default();
+        c.set_base_fov(90.0);
+        assert_eq!(c.base_fov(), 90.0);
+        for _ in 0..120 {
+            c.ease_fov(false, 1.0 / 60.0);
+        }
+        assert!((c.fov_degrees() - 90.0).abs() < 0.01);
+        for _ in 0..120 {
+            c.ease_fov(true, 1.0 / 60.0);
+        }
+        assert!((c.fov_degrees() - 97.0).abs() < 0.01);
     }
 }

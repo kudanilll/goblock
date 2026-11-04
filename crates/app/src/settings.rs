@@ -1,8 +1,16 @@
 //! In-game settings data model, scalable tabs, and pixelated UI renderer.
 
+use std::fs;
+use std::io::Write;
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
 use crate::screens::Transition;
 use crate::ui::{self, Rect, Rgba, Widget};
 use goblock_render::{draw_text, measure_text, push_rect, FontKind, HudVertex};
+
+pub const SETTINGS_FILE: &str = "settings.json";
 
 const WHITE: Rgba = [255, 255, 255, 255];
 const GREEN: Rgba = [80, 230, 160, 255];
@@ -23,7 +31,8 @@ const BOTTOM_BAR_HEIGHT: f32 = 48.0;
 const TRACK_GRAB_MARGIN: f32 = 10.0;
 
 /// Core game settings.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     // Video
     pub fov: f32,
@@ -40,6 +49,42 @@ pub struct Settings {
     pub master_volume: f32,
     pub music_volume: f32,
     pub sfx_volume: f32,
+}
+
+impl Settings {
+    /// Load settings from the given path, falling back to default if missing or unparseable.
+    pub fn load_from(path: &Path) -> Self {
+        if let Ok(content) = fs::read_to_string(path) {
+            match serde_json::from_str::<Self>(&content) {
+                Ok(settings) => return settings,
+                Err(e) => eprintln!("goblock: failed to parse settings {}: {e}", path.display()),
+            }
+        }
+        Self::default()
+    }
+
+    /// Load settings from the default settings.json file.
+    pub fn load() -> Self {
+        Self::load_from(Path::new(SETTINGS_FILE))
+    }
+
+    /// Save settings atomically to the given path.
+    pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        let tmp_string = format!("{}.tmp", path.display());
+        let tmp_path = Path::new(&tmp_string);
+        let json = serde_json::to_string_pretty(self)?;
+        {
+            let mut file = fs::File::create(tmp_path)?;
+            file.write_all(json.as_bytes())?;
+            file.sync_all()?;
+        }
+        fs::rename(tmp_path, path)
+    }
+
+    /// Save settings atomically to the default settings.json file.
+    pub fn save(&self) -> std::io::Result<()> {
+        self.save_to(Path::new(SETTINGS_FILE))
+    }
 }
 
 impl Default for Settings {
@@ -1155,5 +1200,41 @@ mod tests {
             menu.handle_key_down(&mut settings, false, KeyCode::Escape),
             Transition::ResumeWorld
         );
+    }
+
+    #[test]
+    fn settings_save_and_load_round_trip() {
+        let temp =
+            std::env::temp_dir().join(format!("goblock_settings_test_{}.json", std::process::id()));
+        let original = Settings {
+            fov: 95.0,
+            view_distance: 20,
+            reflections: false,
+            shadows: false,
+            ambient_occlusion: false,
+            sensitivity: 3.5,
+            invert_y: true,
+            ..Default::default()
+        };
+
+        original.save_to(&temp).unwrap();
+        let loaded = Settings::load_from(&temp);
+        let _ = std::fs::remove_file(&temp);
+        assert_eq!(original, loaded);
+    }
+
+    #[test]
+    fn settings_load_defaults_when_missing_or_corrupt() {
+        let temp_missing =
+            std::env::temp_dir().join(format!("goblock_missing_{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&temp_missing);
+        assert_eq!(Settings::load_from(&temp_missing), Settings::default());
+
+        let temp_corrupt =
+            std::env::temp_dir().join(format!("goblock_corrupt_{}.json", std::process::id()));
+        std::fs::write(&temp_corrupt, "{ broken json").unwrap();
+        let loaded = Settings::load_from(&temp_corrupt);
+        let _ = std::fs::remove_file(&temp_corrupt);
+        assert_eq!(loaded, Settings::default());
     }
 }

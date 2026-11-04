@@ -53,7 +53,7 @@ impl Screens {
     pub fn new(worlds: Vec<WorldMeta>) -> Self {
         Self {
             mode: AppMode::Title,
-            settings: Settings::default(),
+            settings: Settings::load(),
             worlds,
             title: MainMenu::new(),
             select: SelectWorldMenu::new(),
@@ -153,6 +153,7 @@ impl Screens {
     /// Moves between screens. Transitions that need files, the cursor or the
     /// world change nothing here.
     pub fn apply(&mut self, transition: &Transition) {
+        let was_settings = matches!(self.mode, AppMode::Settings { .. });
         match transition {
             Transition::OpenTitle | Transition::LeaveWorld => self.mode = AppMode::Title,
             Transition::OpenWorldList => {
@@ -176,6 +177,11 @@ impl Screens {
             | Transition::CreateWorld { .. }
             | Transition::DeleteWorld(_)
             | Transition::Quit => {}
+        }
+        if was_settings && !matches!(self.mode, AppMode::Settings { .. }) {
+            if let Err(e) = self.settings.save() {
+                eprintln!("goblock: failed to save settings: {e}");
+            }
         }
     }
 

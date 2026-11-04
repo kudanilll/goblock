@@ -10,3 +10,5 @@ docs/superpowers/
 
 # Local game saves
 saves/
+settings.json
+settings.json.tmp

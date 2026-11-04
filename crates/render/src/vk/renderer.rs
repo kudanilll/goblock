@@ -60,6 +60,10 @@ pub struct FrameView {
     pub underwater: bool,
     /// Whether screen-space ambient occlusion should be applied to the scene.
     pub ambient_occlusion: bool,
+    /// Whether water screen-space reflections should be evaluated.
+    pub reflections: bool,
+    /// Whether sunlight shadows should be evaluated.
+    pub shadows: bool,
     /// Whether the settings menu is open, blurring and dimming the game scene.
     pub blur_background: bool,
     /// When Some((layer_a, layer_b, blend)), renders the static background slideshow instead of 3D scene.
@@ -667,11 +671,17 @@ impl Renderer {
 
             let shadow_matrix =
                 shadow_matrix(view.camera, sun_direction(), view.fog_end, self.shadow.size);
+            let shadow_texel = if view.shadows {
+                self.shadow.texel()
+            } else {
+                0.0
+            };
+            let reflections = self.reflections && view.reflections;
             self.frame_uniforms[frame].write(&frame_uniforms(
                 view,
                 &shadow_matrix,
-                self.shadow.texel(),
-                self.reflections,
+                shadow_texel,
+                reflections,
             ));
             self.upload_hud(frame, ui_vertices);
 
@@ -744,7 +754,7 @@ impl Renderer {
         // The shadow pass always runs, so the map is cleared and in the
         // right layout even when shadows are off.
         self.shadow.begin(device, cmd);
-        if has_geometry && self.shadow.size > 0 {
+        if has_geometry && self.shadow.size > 0 && view.shadows {
             let casters = self.chunks.visible(view.camera, shadow_matrix);
             for (layer, &(pipeline, layout)) in self.shadow_pipelines.iter().enumerate() {
                 d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
@@ -1258,6 +1268,8 @@ mod tests {
             time: 7.0,
             underwater: true,
             ambient_occlusion: true,
+            reflections: true,
+            shadows: true,
             blur_background: false,
             menu_background: None,
         };
@@ -1295,6 +1307,8 @@ mod tests {
             time: 7.0,
             underwater: false,
             ambient_occlusion: false,
+            reflections: true,
+            shadows: true,
             blur_background: true,
             menu_background: None,
         };
@@ -1304,6 +1318,39 @@ mod tests {
             |offset: usize| f32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap());
         assert_eq!(float(256), 1.0, "blur_background flag in uiState.x");
         assert_eq!(float(260), 0.0, "ambient_occlusion flag in uiState.y");
+    }
+
+    #[test]
+    fn frame_uniforms_respect_shadows_and_reflections_flags() {
+        let view = FrameView {
+            camera: Vec3::ZERO,
+            player_feet: Vec3::ZERO,
+            player_height: 1.8,
+            view_projection: Mat4::IDENTITY,
+            fog_end: 100.0,
+            time: 0.0,
+            underwater: false,
+            ambient_occlusion: true,
+            reflections: false,
+            shadows: false,
+            blur_background: false,
+            menu_background: None,
+        };
+        let float = |bytes: &[u8], offset: usize| {
+            f32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+
+        let bytes = frame_uniforms(&view, &Mat4::IDENTITY, 0.0, false);
+        assert_eq!(
+            float(&bytes, 220),
+            0.0,
+            "shadow texel size should be 0.0 when shadows are disabled"
+        );
+        assert_eq!(
+            float(&bytes, 236),
+            0.0,
+            "reflection flag should be 0.0 when reflections are disabled"
+        );
     }
 
     #[test]

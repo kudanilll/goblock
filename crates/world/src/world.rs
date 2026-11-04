@@ -104,6 +104,25 @@ impl World {
         &self.terrain
     }
 
+    pub fn view_distance(&self) -> i32 {
+        self.view_distance
+    }
+
+    /// Change view distance and recalculate chunk streaming offsets.
+    pub fn set_view_distance(&mut self, view_distance: i32) {
+        if self.view_distance == view_distance {
+            return;
+        }
+        self.view_distance = view_distance;
+        let reach = view_distance + 2;
+        let mut offsets: Vec<IVec2> = (-reach..=reach)
+            .flat_map(|z| (-reach..=reach).map(move |x| IVec2::new(x, z)))
+            .filter(|o| o.length_squared() <= reach * reach)
+            .collect();
+        offsets.sort_by_key(|o| o.length_squared());
+        self.offsets = offsets;
+    }
+
     /// Stream chunks around `centre`. Call once per frame.
     pub fn update(&mut self, centre: Vec3) -> Vec<WorldEvent> {
         let centre = chunk_of(centre.x.floor() as i32, centre.z.floor() as i32);
@@ -518,5 +537,26 @@ mod tests {
 
         world.set_block(stone_pos, BlockId::Air);
         assert_eq!(world.block_at(stone_pos), BlockId::Water);
+    }
+
+    #[test]
+    fn changing_view_distance_unloads_excess_chunks() {
+        let mut world = World::new(1, 4).unwrap();
+        let expected = chunks_within(4);
+        pump(&mut world, Vec3::ZERO, |w| w.stats().1 >= expected);
+
+        world.set_view_distance(2);
+        assert_eq!(world.view_distance(), 2);
+
+        let events = world.update(Vec3::ZERO);
+        let unloads = events
+            .iter()
+            .filter(|e| matches!(e, WorldEvent::Unloaded(_)))
+            .count();
+        assert!(
+            unloads > 0,
+            "reducing view distance must emit unload events"
+        );
+        assert!(world.stats().1 <= chunks_within(3));
     }
 }

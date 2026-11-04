@@ -85,7 +85,7 @@ Pressing `Esc` in a world opens settings over a blurred view of it. The player s
 
 ### Settings
 
-Settings has Video, Controls and Audio tabs. Mouse sensitivity and Invert Vertical Look take effect. The field of view, view distance, water reflection, sunlight shadow and volume rows change their stored values but have no effect on the game yet, the game has no sound so far, and the keyboard rows only list the controls. Settings go back to their defaults on every launch.
+Settings has Video, Controls and Audio tabs. Field of view, chunk view distance, water reflections, sunlight shadows, ambient occlusion, mouse sensitivity and inverted vertical look take effect. Settings persist in `settings.json` across launches. The game has no sound so far, so the volume sliders change stored values only, and the keyboard rows only list the controls.
 
 ## Textures
 

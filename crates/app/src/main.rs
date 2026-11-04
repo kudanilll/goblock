@@ -288,6 +288,9 @@ impl ActiveState {
             Transition::DeleteWorld(id) => self.delete_world(&id),
             Transition::LeaveWorld => self.save_and_quit_to_title(),
             Transition::Quit => {
+                if let Err(e) = self.screens.settings.save() {
+                    eprintln!("goblock: save settings error: {e}");
+                }
                 self.save_current_world();
                 event_loop.exit();
             }
@@ -300,6 +303,8 @@ impl ActiveState {
         match game::Game::new(meta.seed) {
             Ok(mut game) => {
                 game.set_screen_size(size);
+                game.set_view_distance(self.screens.settings.view_distance);
+                game.camera.set_base_fov(self.screens.settings.fov);
                 if meta.player_pos != [0.0, 0.0, 0.0] {
                     game.player.feet = glam::DVec3::from_array(meta.player_pos);
                     game.camera.position = game.player.eye();
@@ -378,6 +383,10 @@ impl ActiveState {
         if self.screens.mode == AppMode::Playing {
             if let Some(game) = self.game.as_mut() {
                 let settings = &self.screens.settings;
+                game.camera.set_base_fov(settings.fov);
+                if game.view_distance() != settings.view_distance {
+                    game.set_view_distance(settings.view_distance);
+                }
                 let mut input = self.input.poll();
                 input.look_delta.x *= settings.sensitivity / 2.5;
                 input.look_delta.y *=
@@ -435,6 +444,8 @@ impl ActiveState {
             time: elapsed,
             underwater,
             ambient_occlusion: self.screens.settings.ambient_occlusion,
+            reflections: self.screens.settings.reflections,
+            shadows: self.screens.settings.shadows,
             blur_background: is_in_game_settings,
             menu_background,
         };

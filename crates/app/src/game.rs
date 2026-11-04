@@ -85,7 +85,15 @@ impl Game {
     /// short of the edge of the meshed area, wherever the camera stands in its
     /// own chunk.
     pub fn fog_end(&self) -> f32 {
-        (VIEW_DISTANCE as f32 - 1.5) * CHUNK_SIZE as f32
+        (self.world.view_distance() as f32 - 1.5) * CHUNK_SIZE as f32
+    }
+
+    pub fn view_distance(&self) -> i32 {
+        self.world.view_distance()
+    }
+
+    pub fn set_view_distance(&mut self, view_distance: i32) {
+        self.world.set_view_distance(view_distance);
     }
 
     pub fn update(&mut self, delta_time: f32, input: &InputState) {
@@ -287,6 +295,17 @@ mod tests {
         let game = Game::new(3).unwrap();
         let edge = (VIEW_DISTANCE * CHUNK_SIZE) as f32;
         assert!(game.fog_end() < edge - CHUNK_SIZE as f32);
+    }
+
+    #[test]
+    fn fog_end_adjusts_with_view_distance() {
+        let mut game = Game::new(3).unwrap();
+        assert_eq!(game.view_distance(), VIEW_DISTANCE);
+        let default_fog = game.fog_end();
+        game.set_view_distance(8);
+        assert_eq!(game.view_distance(), 8);
+        assert!(game.fog_end() < default_fog);
+        assert_eq!(game.fog_end(), (8.0 - 1.5) * CHUNK_SIZE as f32);
     }
 
     #[test]
